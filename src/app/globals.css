@@ -1,0 +1,635 @@
+@import "tailwindcss";
+
+/* ===========================================================================
+   Ledger Platform design system
+   Aesthetic: modern private bank — ink, paper, ledger-emerald.
+   Rules: tabular numerals for money, mono for account/JE numbers,
+   150–200ms transitions, visible focus rings, WCAG AA contrast.
+   =========================================================================== */
+
+:root {
+  /* Ink (neutral foundation) */
+  --ink-950: #0a0f1c;
+  --ink-900: #101828;
+  --ink-800: #1d2939;
+  --ink-700: #344054;
+  --ink-600: #475467;
+  --ink-500: #667085;
+  --ink-400: #98a2b3;
+  --ink-300: #d0d5dd;
+  --ink-200: #e4e7ec;
+  --ink-100: #f2f4f7;
+  --ink-50: #f9fafb;
+
+  /* Paper (page background — a touch warm) */
+  --paper: #f6f7f9;
+  --surface: #ffffff;
+
+  /* Ledger emerald (brand accent) */
+  --brand-700: #067156;
+  --brand-600: #078a68;
+  --brand-500: #0aa47c;
+  --brand-100: #d8f3ea;
+  --brand-50: #ecfaf5;
+
+  /* Semantic */
+  --positive: #067156;
+  --negative: #b42318;
+  --negative-bg: #fef3f2;
+  --warning: #b54708;
+  --warning-bg: #fffaeb;
+  --info: #175cd3;
+  --info-bg: #eff8ff;
+
+  /* Business portal accent */
+  --portal: #175cd3;
+
+  --radius-sm: 8px;
+  --radius: 12px;
+  --radius-lg: 16px;
+
+  --shadow-xs: 0 1px 2px rgba(16, 24, 40, 0.05);
+  --shadow-sm: 0 1px 3px rgba(16, 24, 40, 0.08), 0 1px 2px rgba(16, 24, 40, 0.04);
+  --shadow-md: 0 4px 12px -2px rgba(16, 24, 40, 0.1), 0 2px 6px -2px rgba(16, 24, 40, 0.06);
+  --shadow-lg: 0 12px 32px -8px rgba(16, 24, 40, 0.18);
+
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: var(--font-plex-mono), ui-monospace, "Cascadia Code", Consolas, monospace;
+}
+
+* {
+  min-width: 0;
+}
+
+/* Root font-size scales with viewport so the whole rem-based UI grows on
+   large displays (2K/4K) instead of rendering as a small island. */
+html {
+  font-family: var(--font-sans);
+  font-size: 16px;
+}
+@media (min-width: 1800px) {
+  html {
+    font-size: 17.5px;
+  }
+}
+@media (min-width: 2200px) {
+  html {
+    font-size: 19px;
+  }
+}
+@media (min-width: 3000px) {
+  html {
+    font-size: 21px;
+  }
+}
+
+body {
+  background: var(--paper);
+  color: var(--ink-800);
+  font-size: 0.875rem;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+::selection {
+  background: var(--brand-100);
+  color: var(--ink-900);
+}
+
+button,
+a,
+select,
+input[type="date"],
+input[type="checkbox"] {
+  cursor: pointer;
+}
+button:disabled {
+  cursor: not-allowed;
+}
+
+:focus-visible {
+  outline: 2px solid var(--brand-500);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Numerals & data
+--------------------------------------------------------------------------- */
+.num {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+.acct {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  letter-spacing: -0.02em;
+  color: var(--ink-500);
+}
+.amount-neg {
+  color: var(--negative);
+}
+
+/* ---------------------------------------------------------------------------
+   Surfaces
+--------------------------------------------------------------------------- */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--ink-200);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-xs);
+}
+.card-hover {
+  transition: border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
+}
+.card-hover:hover {
+  border-color: var(--ink-300);
+  box-shadow: var(--shadow-md);
+  transform: translateY(-1px);
+}
+
+.page-title {
+  font-size: 1.25rem;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  color: var(--ink-900);
+}
+.page-sub {
+  margin-top: 2px;
+  font-size: 0.875rem;
+  color: var(--ink-500);
+}
+
+/* ---------------------------------------------------------------------------
+   Buttons
+--------------------------------------------------------------------------- */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 2.25rem;
+  padding: 0 0.875rem;
+  border-radius: 10px;
+  font-size: 0.875rem;
+  font-weight: 550;
+  border: 1px solid transparent;
+  transition: background-color 160ms ease, border-color 160ms ease, color 160ms ease,
+    box-shadow 160ms ease;
+  white-space: nowrap;
+}
+.btn:disabled {
+  opacity: 0.45;
+}
+.btn-sm {
+  height: 1.875rem;
+  padding: 0 0.625rem;
+  font-size: 0.8125rem;
+  border-radius: 8px;
+}
+
+.btn-primary {
+  background: var(--ink-900);
+  color: #fff;
+  box-shadow: var(--shadow-xs), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+.btn-primary:hover:not(:disabled) {
+  background: var(--ink-800);
+}
+
+.btn-brand {
+  background: var(--brand-600);
+  color: #fff;
+  box-shadow: var(--shadow-xs), inset 0 1px 0 rgba(255, 255, 255, 0.12);
+}
+.btn-brand:hover:not(:disabled) {
+  background: var(--brand-700);
+}
+
+.btn-secondary {
+  background: var(--surface);
+  border-color: var(--ink-300);
+  color: var(--ink-700);
+  box-shadow: var(--shadow-xs);
+}
+.btn-secondary:hover:not(:disabled) {
+  background: var(--ink-50);
+  border-color: var(--ink-400);
+}
+
+.btn-danger {
+  background: var(--surface);
+  border-color: #fda29b;
+  color: var(--negative);
+  box-shadow: var(--shadow-xs);
+}
+.btn-danger:hover:not(:disabled) {
+  background: var(--negative-bg);
+}
+
+.btn-ghost {
+  color: var(--ink-500);
+}
+.btn-ghost:hover:not(:disabled) {
+  background: var(--ink-100);
+  color: var(--ink-700);
+}
+
+/* ---------------------------------------------------------------------------
+   Forms
+--------------------------------------------------------------------------- */
+.field-label {
+  display: block;
+  font-size: 0.75rem;
+  font-weight: 550;
+  color: var(--ink-600);
+  margin-bottom: 5px;
+}
+.input,
+.select {
+  width: 100%;
+  height: 2.25rem;
+  padding: 0 0.625rem;
+  background: var(--surface);
+  border: 1px solid var(--ink-300);
+  border-radius: 10px;
+  font-size: 0.875rem;
+  color: var(--ink-800);
+  box-shadow: var(--shadow-xs);
+  transition: border-color 160ms ease, box-shadow 160ms ease;
+}
+.input::placeholder {
+  color: var(--ink-400);
+}
+.input:hover,
+.select:hover {
+  border-color: var(--ink-400);
+}
+.input:focus,
+.select:focus {
+  outline: none;
+  border-color: var(--brand-500);
+  box-shadow: 0 0 0 3px rgba(10, 164, 124, 0.15);
+}
+.input-cell {
+  height: 2rem;
+  border-radius: 8px;
+  box-shadow: none;
+}
+
+/* ---------------------------------------------------------------------------
+   Tables
+--------------------------------------------------------------------------- */
+.tbl {
+  width: 100%;
+  font-size: 0.875rem;
+  border-collapse: collapse;
+}
+.tbl thead th {
+  padding: 0.625rem 1rem;
+  text-align: left;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-500);
+  background: var(--ink-50);
+  border-bottom: 1px solid var(--ink-200);
+  white-space: nowrap;
+}
+.tbl tbody td {
+  padding: 0.625rem 1rem;
+  border-bottom: 1px solid var(--ink-100);
+  color: var(--ink-700);
+}
+.tbl tbody tr:last-child td {
+  border-bottom: none;
+}
+.tbl-row-link {
+  transition: background-color 120ms ease;
+}
+.tbl-row-link:hover {
+  background: var(--ink-50);
+}
+.tbl tfoot td {
+  padding: 0.625rem 1rem;
+  border-top: 1px solid var(--ink-200);
+  font-weight: 600;
+  color: var(--ink-900);
+  background: var(--ink-50);
+}
+.td-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+}
+
+/* ---------------------------------------------------------------------------
+   Statements (P&L, Balance Sheet, Cash Flow) — classic accounting typography
+--------------------------------------------------------------------------- */
+.stmt {
+  width: 100%;
+  font-size: 0.875rem;
+  border-collapse: collapse;
+}
+.stmt td {
+  padding: 0.4375rem 1.25rem;
+  color: var(--ink-700);
+}
+.stmt-section td {
+  padding: 0.875rem 1.25rem 0.375rem;
+  font-size: 0.6875rem;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--brand-700);
+}
+.stmt-line-indent {
+  padding-left: 2.25rem !important;
+}
+.stmt-subtotal td {
+  border-top: 1px solid var(--ink-300);
+  font-weight: 600;
+  color: var(--ink-900);
+  padding-top: 8px;
+  padding-bottom: 8px;
+}
+.stmt-total td {
+  border-top: 1px solid var(--ink-900);
+  border-bottom: 3px double var(--ink-900);
+  font-weight: 700;
+  font-size: 0.9375rem;
+  color: var(--ink-900);
+  padding-top: 10px;
+  padding-bottom: 10px;
+}
+.stmt-muted {
+  color: var(--ink-500);
+}
+
+/* ---------------------------------------------------------------------------
+   Badges
+--------------------------------------------------------------------------- */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 1.375rem;
+  padding: 0 0.5rem;
+  border-radius: 999px;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+.badge-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: currentColor;
+}
+.badge-posted {
+  background: var(--brand-50);
+  color: var(--brand-700);
+}
+.badge-draft {
+  background: var(--ink-100);
+  color: var(--ink-600);
+}
+.badge-pending {
+  background: var(--warning-bg);
+  color: var(--warning);
+}
+.badge-voided {
+  background: var(--negative-bg);
+  color: var(--negative);
+}
+.badge-open {
+  background: var(--brand-50);
+  color: var(--brand-700);
+}
+.badge-locked {
+  background: var(--ink-800);
+  color: var(--ink-100);
+}
+.badge-neutral {
+  background: var(--ink-100);
+  color: var(--ink-600);
+}
+.badge-info {
+  background: var(--info-bg);
+  color: var(--info);
+}
+
+/* ---------------------------------------------------------------------------
+   Banners
+--------------------------------------------------------------------------- */
+.banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 0.625rem 0.875rem;
+  border-radius: 10px;
+  font-size: 0.875rem;
+  border: 1px solid transparent;
+}
+.banner-ok {
+  background: var(--brand-50);
+  border-color: #b5e6d7;
+  color: var(--brand-700);
+}
+.banner-error {
+  background: var(--negative-bg);
+  border-color: #fecdca;
+  color: var(--negative);
+}
+.banner-warn {
+  background: var(--warning-bg);
+  border-color: #fedf89;
+  color: var(--warning);
+}
+
+/* ---------------------------------------------------------------------------
+   Sidebar (entity shell)
+--------------------------------------------------------------------------- */
+.sidebar {
+  /* Solid color + gradient as image, so combining with .ledger-grid (which
+     overrides background-image) still leaves a dark panel underneath. */
+  background-color: var(--ink-950);
+  background-image: linear-gradient(180deg, var(--ink-950) 0%, var(--ink-900) 100%);
+  color: var(--ink-300);
+}
+.side-link {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0.4375rem 0.625rem;
+  border-radius: 8px;
+  font-size: 0.8438rem;
+  font-weight: 500;
+  color: #aeb7c4;
+  transition: background-color 140ms ease, color 140ms ease;
+}
+.side-link:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: #e8ecf1;
+}
+.side-link svg {
+  opacity: 0.75;
+}
+.side-link-active {
+  background: rgba(10, 164, 124, 0.14);
+  color: #fff;
+}
+.side-link-active svg {
+  opacity: 1;
+  color: var(--brand-500);
+}
+.side-section {
+  padding: 1rem 0.625rem 0.375rem;
+  font-size: 0.625rem;
+  font-weight: 650;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #5f6b7d;
+}
+
+/* Subtle ledger-grid texture for brand panels */
+.ledger-grid {
+  background-image: linear-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.035) 1px, transparent 1px);
+  background-size: 28px 28px;
+}
+
+/* ---------------------------------------------------------------------------
+   Misc
+--------------------------------------------------------------------------- */
+.avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.875rem;
+  height: 1.875rem;
+  border-radius: 999px;
+  background: var(--brand-100);
+  color: var(--brand-700);
+  font-size: 0.75rem;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+}
+.kbd-hint {
+  color: var(--ink-400);
+  font-size: 0.75rem;
+}
+
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.fade-up {
+  animation: fade-up 240ms ease both;
+}
+
+/* ---------------------------------------------------------------------------
+   Print — statements should come out looking like statements. Chrome's
+   "Save as PDF" uses these rules, which is how users get a PDF without the
+   app shipping a PDF renderer.
+   --------------------------------------------------------------------------- */
+.no-print {
+  /* hidden only when printing (see @media print) */
+}
+
+@media print {
+  @page {
+    margin: 14mm 12mm;
+  }
+
+  html,
+  body {
+    background: #fff !important;
+    color: #000;
+    font-size: 10.5pt;
+  }
+
+  /* Chrome drops backgrounds by default; keep the rules that carry meaning */
+  * {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  /* Everything that is navigation or action, not content */
+  .sidebar,
+  .no-print,
+  .btn,
+  form.card,
+  details,
+  .banner-warn,
+  .fade-up > .mb-5.flex.flex-wrap.items-end.justify-between > div:last-child {
+    display: none !important;
+  }
+
+  /* Reclaim the sidebar's space and drop the card chrome */
+  main {
+    max-width: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+  .card {
+    border: none !important;
+    box-shadow: none !important;
+    border-radius: 0 !important;
+    max-width: none !important;
+    overflow: visible !important;
+  }
+  .fade-up {
+    animation: none !important;
+  }
+
+  .page-title {
+    font-size: 15pt;
+  }
+  .page-sub {
+    color: #444;
+  }
+
+  /* Tables must not break mid-row and repeat their header on each page */
+  table {
+    width: 100% !important;
+    border-collapse: collapse;
+  }
+  thead {
+    display: table-header-group;
+  }
+  tr,
+  .stmt-total,
+  .stmt-subtotal {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+  .stmt-section {
+    break-after: avoid;
+    page-break-after: avoid;
+  }
+
+  a {
+    color: inherit !important;
+    text-decoration: none !important;
+  }
+}

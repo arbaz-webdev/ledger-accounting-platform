@@ -1,0 +1,10 @@
+node_modules/
+.pgdata/
+.next/
+out/
+build/
+.env
+*.tsbuildinfo
+next-env.d.ts
+npm-debug.log*
+.DS_Store

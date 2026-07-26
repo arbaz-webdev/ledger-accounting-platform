@@ -1,0 +1,66 @@
+"use client";
+
+import { useActionState } from "react";
+import { createUserAction, type FormState } from "./actions";
+import { ASSIGNABLE_ROLES } from "@/lib/roles";
+import { IconPlus } from "@/components/icons";
+
+export function NewUserForm() {
+  const [state, formAction, pending] = useActionState<FormState, FormData>(createUserAction, {});
+
+  const groups = [...new Set(ASSIGNABLE_ROLES.map((r) => r.group))];
+
+  return (
+    <form action={formAction} className="space-y-4">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <div>
+          <label className="field-label">Full name</label>
+          <input name="fullName" required placeholder="Sara Siddiqui" className="input" />
+        </div>
+        <div>
+          <label className="field-label">Email</label>
+          <input name="email" type="email" required placeholder="sara@firm.test" className="input" />
+        </div>
+        <div>
+          <label className="field-label">Role</label>
+          <select name="role" className="select" defaultValue="accountant_staff">
+            {groups.map((g) => (
+              <optgroup key={g} label={g}>
+                {ASSIGNABLE_ROLES.filter((r) => r.group === g).map((r) => (
+                  <option key={r.value} value={r.value}>
+                    {r.label}
+                  </option>
+                ))}
+              </optgroup>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label className="field-label">Initial password</label>
+          <input
+            name="password"
+            type="password"
+            required
+            minLength={8}
+            placeholder="At least 8 characters"
+            className="input"
+          />
+          <p className="mt-1 text-[0.6875rem] text-[var(--ink-400)]">
+            Share it with them directly — they should change it after signing in.
+          </p>
+        </div>
+      </div>
+
+      <div className="flex items-center gap-3">
+        <button disabled={pending} className="btn btn-primary">
+          <IconPlus className="h-4 w-4" />
+          {pending ? "Creating…" : "Create user"}
+        </button>
+        {state.error && (
+          <span className="text-[0.8125rem] text-[var(--negative)]">{state.error}</span>
+        )}
+        {state.ok && <span className="text-[0.8125rem] text-[var(--brand-700)]">{state.ok}</span>}
+      </div>
+    </form>
+  );
+}
