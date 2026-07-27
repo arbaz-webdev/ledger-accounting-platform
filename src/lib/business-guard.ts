@@ -5,6 +5,7 @@ import { db } from "@/db";
 import { entities, userEntityAccess } from "@/db/schema";
 import { requireBusinessUser, type SessionUser } from "@/lib/auth";
 import { hasModule, allowedModules, type ModuleKey } from "@/services/permissions";
+import { firmAccessState } from "@/services/subscriptions";
 
 /**
  * The client portal is read-only and single-entity: a business user sees the
@@ -37,6 +38,13 @@ export async function portalContext(): Promise<PortalContext> {
   // /no-access lives outside the portal layout — redirecting to a page that
   // itself calls this function would loop.
   if (!row) redirect("/no-access");
+
+  // A client loses portal access when their accounting firm's subscription
+  // lapses — the firm is the paying customer, not the client.
+  if (user.firmId) {
+    const access = await firmAccessState(user.firmId);
+    if (!access.allowed) redirect("/suspended");
+  }
 
   return {
     user,

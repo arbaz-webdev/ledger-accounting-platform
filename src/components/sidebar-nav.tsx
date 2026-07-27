@@ -35,9 +35,22 @@ export type NavItem =
   | { href: string; label: string; icon: keyof typeof ICONS; module?: string }
   | { section: string; module?: string };
 
-export function SidebarNav({ entityId, items }: { entityId: string; items: NavItem[] }) {
+/**
+ * Shared sidebar for every portal. Pass `basePath` for the platform/firm
+ * consoles; the accountant portal passes `entityId` and gets
+ * `/accountant/<id>` as its base.
+ */
+export function SidebarNav({
+  entityId,
+  items,
+  basePath: basePathProp,
+}: {
+  entityId?: string;
+  items: NavItem[];
+  basePath?: string;
+}) {
   const pathname = usePathname();
-  const basePath = `/accountant/${entityId}`;
+  const basePath = basePathProp ?? `/accountant/${entityId}`;
 
   return (
     <nav className="space-y-0.5 px-3 pb-4">

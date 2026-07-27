@@ -42,7 +42,12 @@ export type ModuleDef = {
   allowedRoles: UserRole[];
 };
 
-const ALL_ACCOUNTANT: UserRole[] = ["platform_admin", "firm_admin", "accountant_staff"];
+const ALL_ACCOUNTANT: UserRole[] = [
+  "platform_admin",
+  "firm_owner",
+  "firm_admin",
+  "accountant_staff",
+];
 const ACCOUNTANT_AND_BUSINESS: UserRole[] = [
   ...ALL_ACCOUNTANT,
   "business_admin",
@@ -103,13 +108,13 @@ export const MODULE_DEFS: ModuleDef[] = [
     key: "periods",
     label: "Periods & close",
     hint: "Lock periods and run the year-end close.",
-    allowedRoles: ["platform_admin", "firm_admin"],
+    allowedRoles: ["platform_admin", "firm_owner", "firm_admin"],
   },
   {
     key: "admin",
     label: "Administration",
     hint: "Account mappings, FX rates, users and the audit trail.",
-    allowedRoles: ["platform_admin", "firm_admin"],
+    allowedRoles: ["platform_admin", "firm_owner", "firm_admin"],
   },
 ];
 
@@ -129,7 +134,7 @@ export class PermissionError extends Error {
 
 /** Admins administer the matrix, so it never applies to them. */
 function bypassesMatrix(role: UserRole): boolean {
-  return role === "platform_admin" || role === "firm_admin";
+  return role === "platform_admin" || role === "firm_owner" || role === "firm_admin";
 }
 
 export function roleAllows(role: UserRole, moduleKey: ModuleKey): boolean {

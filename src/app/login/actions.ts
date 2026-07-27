@@ -4,7 +4,7 @@ import { redirect } from "next/navigation";
 import { eq } from "drizzle-orm";
 import { db } from "@/db";
 import { users } from "@/db/schema";
-import { createSession, destroySession, verifyPassword, ACCOUNTANT_ROLES } from "@/lib/auth";
+import { createSession, destroySession, verifyPassword, homePathFor } from "@/lib/auth";
 import { writeAudit } from "@/services/audit";
 import type { UserRole } from "@/lib/auth";
 
@@ -26,7 +26,8 @@ export async function login(_prev: LoginState, formData: FormData): Promise<Logi
   await createSession(user.id);
   await writeAudit(db, { userId: user.id, action: "LOGIN" });
 
-  redirect(ACCOUNTANT_ROLES.includes(user.role as UserRole) ? "/accountant" : "/business");
+  // Each tier has its own portal; the role decides where you land.
+  redirect(homePathFor(user.role as UserRole));
 }
 
 export async function logout(): Promise<void> {

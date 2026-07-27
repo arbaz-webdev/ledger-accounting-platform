@@ -21,11 +21,20 @@ import {
 
 export const userRoleEnum = pgEnum("user_role", [
   "platform_admin",
+  "firm_owner",
   "firm_admin",
   "accountant_staff",
   "business_admin",
   "business_staff",
   "view_only",
+]);
+
+export const subscriptionStatusEnum = pgEnum("subscription_status", [
+  "trial",
+  "active",
+  "past_due",
+  "suspended",
+  "cancelled",
 ]);
 
 export const accountTypeEnum = pgEnum("account_type", [
@@ -64,7 +73,49 @@ export const sourceModuleEnum = pgEnum("source_module", [
 export const firms = pgTable("firms", {
   id: uuid("id").primaryKey().defaultRandom(),
   name: text("name").notNull(),
+  legalName: text("legal_name"),
+  contactEmail: text("contact_email"),
+  contactPhone: text("contact_phone"),
+  /** platform kill switch — false locks every user of the firm out */
+  isActive: boolean("is_active").notNull().default(true),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// ---------------------------------------------------------------------------
+// Phase 9 — Plans & subscriptions (the commercial layer above tenancy)
+// ---------------------------------------------------------------------------
+
+export const plans = pgTable("plans", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  code: text("code").notNull().unique(),
+  name: text("name").notNull(),
+  description: text("description"),
+  monthlyPrice: numeric("monthly_price", { precision: 18, scale: 2 }).notNull().default("0"),
+  currency: char("currency", { length: 3 }).notNull().default("USD"),
+  /** null = unlimited */
+  maxEntities: integer("max_entities"),
+  maxUsers: integer("max_users"),
+  isActive: boolean("is_active").notNull().default(true),
+  sortOrder: integer("sort_order").notNull().default(100),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const subscriptions = pgTable("subscriptions", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  firmId: uuid("firm_id")
+    .notNull()
+    .references(() => firms.id, { onDelete: "cascade" }),
+  planId: uuid("plan_id")
+    .notNull()
+    .references(() => plans.id),
+  status: subscriptionStatusEnum("status").notNull().default("trial"),
+  startedOn: date("started_on").notNull(),
+  trialEndsOn: date("trial_ends_on"),
+  currentPeriodEnd: date("current_period_end"),
+  notes: text("notes"),
+  createdBy: uuid("created_by").references(() => users.id),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
 export const users = pgTable("users", {
@@ -87,6 +138,7 @@ export const entities = pgTable("entities", {
   legalName: text("legal_name"),
   baseCurrency: char("base_currency", { length: 3 }).notNull().default("USD"),
   fiscalYearStartMonth: integer("fiscal_year_start_month").notNull().default(1),
+  isActive: boolean("is_active").notNull().default(true),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 

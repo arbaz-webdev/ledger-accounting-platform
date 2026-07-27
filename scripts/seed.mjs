@@ -63,11 +63,46 @@ async function main() {
 
   const passwordHash = await bcrypt.hash("demo1234", 12);
 
+  // Tier 1 — the software vendor. Belongs to no firm.
+  await client.query(
+    `INSERT INTO users (firm_id, email, password_hash, full_name, role)
+     VALUES (NULL, 'platform@demo.test', $1, 'Platform Owner', 'platform_admin')
+     ON CONFLICT (email) DO NOTHING`,
+    [passwordHash]
+  );
+
+  // Tier 2 — the firm that bought the subscription.
+  await client.query(
+    `INSERT INTO users (firm_id, email, password_hash, full_name, role)
+     VALUES ($1, 'firm@demo.test', $2, 'Fiona Firm-Owner', 'firm_owner')
+     ON CONFLICT (email) DO NOTHING`,
+    [firmId, passwordHash]
+  );
+
+  // Tier 3 — staff who keep the books.
   await client.query(
     `INSERT INTO users (firm_id, email, password_hash, full_name, role)
      VALUES ($1, 'accountant@demo.test', $2, 'Ayesha Accountant', 'firm_admin')
      ON CONFLICT (email) DO NOTHING`,
     [firmId, passwordHash]
+  );
+
+  // Give the demo firm subscriber details and a professional subscription.
+  await client.query(
+    `UPDATE firms SET legal_name = COALESCE(legal_name, 'Demo Accounting Firm LLC'),
+                      contact_email = COALESCE(contact_email, 'firm@demo.test')
+     WHERE id = $1`,
+    [firmId]
+  );
+  await client.query(
+    `INSERT INTO subscriptions (firm_id, plan_id, status, started_on, current_period_end, notes)
+     SELECT $1, p.id, 'active', CURRENT_DATE, CURRENT_DATE + INTERVAL '1 year', 'Demo subscription'
+     FROM plans p
+     WHERE p.code = 'professional'
+       AND NOT EXISTS (
+         SELECT 1 FROM subscriptions s WHERE s.firm_id = $1 AND s.status <> 'cancelled'
+       )`,
+    [firmId]
   );
 
   const entityRes = await client.query(
@@ -121,9 +156,11 @@ async function main() {
     );
   }
 
-  console.log("Seed complete:");
-  console.log("  Accountant login: accountant@demo.test / demo1234");
-  console.log("  Business login:   owner@demo.test / demo1234");
+  console.log("Seed complete — all logins use password demo1234:");
+  console.log("  1 Platform  platform@demo.test    -> /platform");
+  console.log("  2 Firm      firm@demo.test        -> /firm");
+  console.log("  3 Accountant accountant@demo.test -> /accountant");
+  console.log("  4 Customer  owner@demo.test       -> /business");
   console.log(`  Entity: Acme Trading Ltd (${COA.length} accounts, ${year} periods)`);
   await client.end();
 }

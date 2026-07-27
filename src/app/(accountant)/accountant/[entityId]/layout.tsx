@@ -7,6 +7,7 @@ import { logout } from "@/app/login/actions";
 import { Wordmark } from "@/components/logo";
 import { SidebarNav, type NavItem } from "@/components/sidebar-nav";
 import { allowedModules, type ModuleKey } from "@/services/permissions";
+import { assertFirmSubscription } from "@/lib/guard";
 import { IconSignOut } from "@/components/icons";
 import { initials } from "@/lib/format";
 
@@ -55,6 +56,8 @@ export default async function EntityLayout({
 }) {
   const { entityId } = await params;
   const user = await requireAccountant();
+  // Commercial gate: suspended/cancelled firms are locked out entirely.
+  const subscriptionWarning = await assertFirmSubscription(user);
 
   try {
     await assertEntityAccess(user, entityId);
@@ -127,7 +130,14 @@ export default async function EntityLayout({
       </aside>
 
       <div className="min-w-0 flex-1">
-        <main className="mx-auto max-w-5xl px-8 py-8">{children}</main>
+        <main className="mx-auto max-w-5xl px-8 py-8">
+          {subscriptionWarning && (
+            <div className="banner banner-warn mb-4 no-print">
+              <span>{subscriptionWarning}</span>
+            </div>
+          )}
+          {children}
+        </main>
       </div>
     </div>
   );

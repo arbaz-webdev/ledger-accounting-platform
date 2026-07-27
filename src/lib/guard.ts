@@ -2,6 +2,22 @@ import "server-only";
 import { notFound, redirect } from "next/navigation";
 import { requireAccountant, assertEntityAccess, type SessionUser } from "@/lib/auth";
 import { hasModule, type ModuleKey } from "@/services/permissions";
+import { firmAccessState } from "@/services/subscriptions";
+
+/**
+ * Commercial gate: a firm whose subscription is suspended/cancelled (or whose
+ * account was deactivated) loses access to every portal. platform_admin is
+ * exempt — they must still be able to get in and fix the subscription.
+ * Returns the soft warning (trial ending, payment overdue) for banners.
+ */
+export async function assertFirmSubscription(user: SessionUser): Promise<string | undefined> {
+  if (user.role === "platform_admin") return undefined;
+  if (!user.firmId) return undefined;
+
+  const access = await firmAccessState(user.firmId);
+  if (!access.allowed) redirect("/suspended");
+  return access.warning;
+}
 
 /**
  * One guard for every entity-scoped accountant route: authenticated, has
@@ -14,6 +30,7 @@ export async function guardEntity(
   moduleKey: ModuleKey
 ): Promise<SessionUser> {
   const user = await requireAccountant();
+  await assertFirmSubscription(user);
 
   try {
     await assertEntityAccess(user, entityId);
@@ -33,6 +50,7 @@ export async function guardEntityAny(
   moduleKeys: ModuleKey[]
 ): Promise<SessionUser> {
   const user = await requireAccountant();
+  await assertFirmSubscription(user);
 
   try {
     await assertEntityAccess(user, entityId);

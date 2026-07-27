@@ -19,12 +19,31 @@ npm run db:seed      # demo firm, users, entity, default COA, current-year perio
 npm run dev          # http://localhost:3000
 ```
 
+## The four tiers
+
+The product is a SaaS with four levels of user, each with its own portal:
+
+| Tier | Role | Portal | What they do |
+|---|---|---|---|
+| 1 | `platform_admin` | `/platform` | The software vendor: provisions firms, sets plans and subscriptions, audit-logged support access into any firm's books |
+| 2 | `firm_owner` | `/firm` | The subscribing accounting firm: adds its own clients and staff (within plan limits), views its subscription |
+| 3 | `firm_admin`, `accountant_staff` | `/accountant` | Keeps the books for each client |
+| 4 | `business_admin`, `business_staff`, `view_only` | `/business` | The firm's clients: read-only window on their own numbers |
+
+A **subscription gate** runs on every firm-scoped portal: `suspended` / `cancelled`
+(or a deactivated firm) locks all of that firm's users out to `/suspended`;
+`past_due` and `trial` let them in with a banner. `platform_admin` is exempt so
+they can always get in and fix it. Plan limits on clients and users are checked
+server-side, not just in the UI.
+
 Demo logins (password `demo1234`):
 
-| Login | Role | Interface |
+| Login | Tier | Portal |
 |---|---|---|
-| `accountant@demo.test` | firm_admin | Accountant — full control |
-| `owner@demo.test` | business_admin | Business — scoped to Acme Trading Ltd |
+| `platform@demo.test` | Platform owner | `/platform` |
+| `firm@demo.test` | Firm owner | `/firm` |
+| `accountant@demo.test` | Accountant (firm_admin) | `/accountant` |
+| `owner@demo.test` | Customer (business_admin) | `/business` |
 
 Stop the database with `npm run db:stop`. To use a different PostgreSQL (Docker, native,
 cloud), point `DATABASE_URL` in `.env` at it and skip `db:start`.
@@ -98,3 +117,4 @@ src/app/(business)/    business interface (single entity, restricted)
 - [x] Phase 6 — Inventory (FIFO / AVCO / specific ID per item, invoice/bill integration, GL tie-out)
 - [x] Phase 7 — Period close checklist, year-end close (real closing JE), tax summary, comparative P&L, changes in equity, day book
 - [x] Phase 8 — Hardening: multi-currency + realised FX, permissions matrix & user admin, CSV exports + print views, client portal
+- [x] Phase 9 — SaaS tiers: platform console, firm console, plans & subscriptions with enforced limits and an access gate

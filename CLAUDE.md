@@ -108,6 +108,26 @@ Multi-tenant double-entry accounting platform. Spec: `../Accounting_Software_Dat
   Money exports as plain decimals ("1250.00"), never the display format.
   Printing is CSS-only (`@media print` in globals.css, `.no-print`) — that is
   how users get a PDF, so the app ships no PDF renderer.
+- **Four tiers** (Phase 9). `homePathFor(role)` in `src/lib/auth.ts` is the single
+  source of truth for where a role lands: `platform_admin`→`/platform`,
+  `firm_owner`→`/firm`, accountant roles→`/accountant`, business roles→`/business`.
+  `firm_owner` is in `ACCOUNTANT_ROLES` too (they may work in the books) but their
+  HOME is `/firm` — so the `firm_owner` check must come FIRST in any routing.
+- **Subscription gate** (`src/services/subscriptions.ts` + `assertFirmSubscription`
+  in `lib/guard.ts`): `firmAccessState()` returns a value rather than redirecting,
+  so soft states render a banner. `suspended`/`cancelled`/inactive firm → redirect
+  to `/suspended`; `past_due`/`trial` → allowed with a warning. **`platform_admin`
+  is exempt** — never gate them out, or a suspended firm can't be un-suspended.
+  A firm with NO subscription row is treated as blocked, which is why migration
+  0012 backfills every pre-existing firm. `/suspended` lives outside every portal
+  layout so it can't loop through the gate.
+- **Plan limits** are enforced in the SERVICE (`assertCanAddEntity` /
+  `assertCanAddUser`), not the form — disabling a button is a hint, not a control.
+  `null` on a plan limit means unlimited; a plain integer can't express that.
+- Provisioning a firm (`provisionFirm`) creates firm + owner user + subscription
+  in ONE transaction — a firm without an owner or a subscription is unusable.
+  `createClient` then seeds COA + periods + mappings so a new client can post
+  immediately.
 - Money: `numeric(18,2)` in PG, strings in JS, `decimal.js` for arithmetic. Never float.
 - Every mutation writes an `audit_log` row inside the same transaction (`writeAudit`).
 - Multi-tenancy: every query filters by `entity_id`; server actions call

@@ -13,14 +13,38 @@ const SESSION_TTL_MS = 1000 * 60 * 60 * 12; // 12 hours
 
 export type UserRole =
   | "platform_admin"
+  | "firm_owner"
   | "firm_admin"
   | "accountant_staff"
   | "business_admin"
   | "business_staff"
   | "view_only";
 
-export const ACCOUNTANT_ROLES: UserRole[] = ["platform_admin", "firm_admin", "accountant_staff"];
+/**
+ * Four tiers, each with its own portal (spec: Phase 9).
+ *   platform_admin              /platform    the software vendor
+ *   firm_owner                  /firm        the subscribing accounting firm
+ *   firm_admin, accountant_staff /accountant staff who keep the books
+ *   business roles, view_only   /business    the firm's clients, read-only
+ *
+ * firm_owner also appears in ACCOUNTANT_ROLES: they own the practice, so they
+ * may work in the books too — but their HOME is /firm.
+ */
+export const ACCOUNTANT_ROLES: UserRole[] = [
+  "platform_admin",
+  "firm_owner",
+  "firm_admin",
+  "accountant_staff",
+];
 export const BUSINESS_ROLES: UserRole[] = ["business_admin", "business_staff", "view_only"];
+
+/** Where a role lands after signing in. */
+export function homePathFor(role: UserRole): string {
+  if (role === "platform_admin") return "/platform";
+  if (role === "firm_owner") return "/firm";
+  if (ACCOUNTANT_ROLES.includes(role)) return "/accountant";
+  return "/business";
+}
 
 export type SessionUser = {
   id: string;
@@ -99,14 +123,32 @@ export async function requireUser(): Promise<SessionUser> {
 
 export async function requireAccountant(): Promise<SessionUser> {
   const user = await requireUser();
-  if (!ACCOUNTANT_ROLES.includes(user.role)) redirect("/business");
+  if (!ACCOUNTANT_ROLES.includes(user.role)) redirect(homePathFor(user.role));
   return user;
 }
 
 export async function requireBusinessUser(): Promise<SessionUser> {
   const user = await requireUser();
-  if (!BUSINESS_ROLES.includes(user.role)) redirect("/accountant");
+  if (!BUSINESS_ROLES.includes(user.role)) redirect(homePathFor(user.role));
   return user;
+}
+
+/** Tier 1: the software vendor. Not scoped to any firm. */
+export async function requirePlatformAdmin(): Promise<SessionUser> {
+  const user = await requireUser();
+  if (user.role !== "platform_admin") redirect(homePathFor(user.role));
+  return user;
+}
+
+/**
+ * Tier 2: the firm that bought the subscription. Guarantees a firmId, so
+ * callers never have to null-check the tenant they're operating on.
+ */
+export async function requireFirmOwner(): Promise<SessionUser & { firmId: string }> {
+  const user = await requireUser();
+  if (user.role !== "firm_owner") redirect(homePathFor(user.role));
+  if (!user.firmId) redirect("/no-access");
+  return user as SessionUser & { firmId: string };
 }
 
 /**
@@ -122,8 +164,13 @@ export async function assertEntityAccess(user: SessionUser, entityId: string): P
   const entity = entityRows[0];
   if (!entity) throw new Error("Entity not found");
 
+  // Platform admins reach any firm's books for support (audit-logged by the
+  // support-access route, not here).
   if (user.role === "platform_admin") return;
-  if (user.role === "firm_admin" && entity.firmId === user.firmId) return;
+  // Whoever runs the firm reaches every client of that firm.
+  if ((user.role === "firm_admin" || user.role === "firm_owner") && entity.firmId === user.firmId) {
+    return;
+  }
 
   const access = await db
     .select({ userId: userEntityAccess.userId })
