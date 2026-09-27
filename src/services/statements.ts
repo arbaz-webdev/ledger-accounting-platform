@@ -48,7 +48,7 @@ type Balance = {
   /** signed balance in the account's natural direction is derived per statement */
 };
 
-async function accountBalances(entityId: string, from: string, to: string): Promise<Balance[]> {
+async function accountBalances(entityId: string, from: string, to: string, operating = false): Promise<Balance[]> {
   const result = await db.execute(sql`
     SELECT a.id, a.account_number AS number, a.name, a.type, a.sub_type AS subtype,
       COALESCE(SUM(CASE WHEN je.id IS NOT NULL THEN l.debit_base  ELSE 0 END), 0) AS debit,
@@ -58,6 +58,10 @@ async function accountBalances(entityId: string, from: string, to: string): Prom
     LEFT JOIN journal_entries je ON je.id = l.je_id
       AND je.status IN ('posted', 'voided')
       AND je.date >= ${from} AND je.date <= ${to}
+      ${operating ? sql`AND NOT EXISTS (
+        SELECT 1 FROM fiscal_year_closes fy
+        WHERE fy.entity_id = ${entityId} AND (fy.je_id = je.id OR fy.je_id = je.reverses_je_id)
+      )` : sql``}
     WHERE a.entity_id = ${entityId}
     GROUP BY a.id, a.account_number, a.name, a.type, a.sub_type
     ORDER BY a.account_number
@@ -92,7 +96,8 @@ function num(b: Balance): number {
 const PL_TYPES: AccountType[] = ["revenue", "cogs", "expense", "other_income", "other_expense", "tax"];
 const isPL = (b: Balance) => PL_TYPES.includes(b.type);
 const isCash = (b: Balance) =>
-  b.type === "asset" && (b.subType === "cash_and_bank" || (num(b) >= 1000 && num(b) < 1100));
+  b.type === "asset" && b.subType === "cash_and_bank";
+const isCurrentAsset = (b: Balance) => b.subType === "tax" || b.subType === "suspense" || num(b) < 1500;
 const isContraAsset = (b: Balance) => b.type === "asset" && b.subType === "contra_asset";
 
 /** Natural-direction signed balance: debit-normal accounts positive on debit. */
@@ -146,7 +151,7 @@ export async function getProfitAndLoss(
   from: string,
   to: string
 ): Promise<ProfitAndLoss> {
-  const balances = await accountBalances(entityId, from, to);
+  const balances = await accountBalances(entityId, from, to, true);
   const active = (b: Balance) => b.debit !== 0n || b.credit !== 0n;
 
   const line = (b: Balance, amount: bigint): PLLine => ({
@@ -255,8 +260,8 @@ export async function getBalanceSheet(entityId: string, asOf: string): Promise<B
 
   // Assets (debit-normal)
   const assets = cumulative.filter((b) => b.type === "asset" && active(b));
-  const currentAssetAccts = assets.filter((b) => num(b) < 1500);
-  const nonCurrentAssetAccts = assets.filter((b) => num(b) >= 1500);
+  const currentAssetAccts = assets.filter(isCurrentAsset);
+  const nonCurrentAssetAccts = assets.filter((b) => !isCurrentAsset(b));
   const currentAssetsTotal = currentAssetAccts.reduce((s, b) => s + debitNet(b), 0n);
   const nonCurrentAssetsTotal = nonCurrentAssetAccts.reduce((s, b) => s + debitNet(b), 0n);
   const totalAssets = currentAssetsTotal + nonCurrentAssetsTotal;
@@ -334,7 +339,7 @@ export type CashFlow = {
 };
 
 export async function getCashFlow(entityId: string, from: string, to: string): Promise<CashFlow> {
-  const period = await accountBalances(entityId, from, to);
+  const period = await accountBalances(entityId, from, to, true);
   const openingBalances = await accountBalances(entityId, MIN_DATE, dayBefore(from));
   const closingBalances = await accountBalances(entityId, MIN_DATE, to);
 
@@ -360,7 +365,7 @@ export async function getCashFlow(entityId: string, from: string, to: string): P
     (b) =>
       b.type === "asset" &&
       !isCash(b) &&
-      num(b) < 1500 &&
+      isCurrentAsset(b) &&
       !(b.subType === "receivable" || (num(b) >= 1200 && num(b) < 1300)) &&
       !(b.subType === "inventory" || (num(b) >= 1300 && num(b) < 1400))
   );
@@ -394,7 +399,7 @@ export async function getCashFlow(entityId: string, from: string, to: string): P
 
   // --- Investing --- non-current assets excluding contra (accum. depreciation)
   const nonCurrentAssetAccts = period.filter(
-    (b) => b.type === "asset" && num(b) >= 1500 && !isContraAsset(b)
+    (b) => b.type === "asset" && !isCurrentAsset(b) && !isContraAsset(b)
   );
   const investingLines: CFLine[] = nonCurrentAssetAccts
     .map((b) => ({ label: `Net movement in ${b.name}`, amount: formatCents(creditNet(b)) }))

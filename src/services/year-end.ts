@@ -1,12 +1,13 @@
 import "server-only";
 import Decimal from "decimal.js";
 import { and, desc, eq, gte, isNull, lte, sql } from "drizzle-orm";
-import { db, withTransaction } from "@/db";
+import { db, type Db, type Tx } from "@/db";
 import { entities, fiscalYearCloses, journalEntries, periods } from "@/db/schema";
 import { postJournalEntry, voidJournalEntry, type JournalEntryInput } from "@/services/journal";
 import { resolveMapping } from "@/services/mappings";
 import { ensureYearPeriods, setPeriodLock } from "@/services/periods";
 import { writeAudit } from "@/services/audit";
+import { assertSuspenseClear } from "@/services/account-policy";
 
 /**
  * Year-end close (Phase 7). Closing a fiscal year posts ONE real journal
@@ -53,8 +54,8 @@ async function entityFyStartMonth(entityId: string): Promise<number> {
 }
 
 /** Per-account cumulative P&L balances up to a date (posted + voided). */
-async function plBalancesAsOf(entityId: string, asOf: string) {
-  const res = await db.execute(sql`
+async function plBalancesAsOf(entityId: string, asOf: string, executor: Db | Tx = db) {
+  const res = await executor.execute(sql`
     SELECT a.id, a.account_number AS number, a.name,
            COALESCE(SUM(l.credit_base - l.debit_base), 0) AS net
     FROM chart_of_accounts a
@@ -84,6 +85,8 @@ async function netIncomeBetween(entityId: string, from: string, to: string): Pro
       AND a.type IN (${sql.join(PL_TYPES.map((t) => sql`${t}`), sql`, `)})
       AND je.status IN ('posted', 'voided')
       AND je.date >= ${from} AND je.date <= ${to}
+      AND NOT EXISTS (SELECT 1 FROM fiscal_year_closes fy
+        WHERE fy.entity_id=${entityId} AND (fy.je_id=je.id OR fy.je_id=je.reverses_je_id))
   `);
   return new Decimal(String((res.rows[0] as { net: string }).net));
 }
@@ -98,6 +101,7 @@ export type FyStatus = {
   periodsLocked: number;
   periodsTotal: number;
   finalPeriodLocked: boolean;
+  hasActivity: boolean;
 };
 
 export async function getFyStatus(entityId: string, startYear: number): Promise<FyStatus> {
@@ -144,6 +148,8 @@ export async function getFyStatus(entityId: string, startYear: number): Promise<
   const endYear = Number(range.end.slice(0, 4));
   const endMonth = Number(range.end.slice(5, 7));
   const finalPeriod = periodRows.find((p) => p.year === endYear && p.month === endMonth);
+  const activity = await db.execute(sql`SELECT 1 FROM journal_entries WHERE entity_id=${entityId}
+    AND status IN ('posted','voided') AND date BETWEEN ${range.start} AND ${range.end} LIMIT 1`);
 
   return {
     range,
@@ -152,8 +158,9 @@ export async function getFyStatus(entityId: string, startYear: number): Promise<
     sweepTotal: sweepTotal.toFixed(2),
     sweepIncludesPrior: !sweepTotal.equals(yearProfit),
     periodsLocked: periodRows.filter((p) => p.isLocked).length,
-    periodsTotal: periodRows.length,
+    periodsTotal: 12,
     finalPeriodLocked: finalPeriod?.isLocked ?? false,
+    hasActivity: activity.rows.length > 0,
   };
 }
 
@@ -167,13 +174,15 @@ export async function listFyCloses(entityId: string) {
 }
 
 export async function closeFiscalYear(entityId: string, startYear: number, userId: string) {
+  return db.transaction(async (tx) => {
+  await tx.select({ id: entities.id }).from(entities).where(eq(entities.id, entityId)).for("update");
   const fyStartMonth = await entityFyStartMonth(entityId);
   const range = fyRange(startYear, fyStartMonth);
   const endYear = Number(range.end.slice(0, 4));
   const endMonth = Number(range.end.slice(5, 7));
 
   // Guards
-  const existing = await db
+  const existing = await tx
     .select({ id: fiscalYearCloses.id })
     .from(fiscalYearCloses)
     .where(
@@ -185,7 +194,7 @@ export async function closeFiscalYear(entityId: string, startYear: number, userI
     );
   if (existing.length > 0) throw new YearEndError(`${range.label} is already closed`);
 
-  const laterClose = await db
+  const laterClose = await tx
     .select({ label: fiscalYearCloses.label })
     .from(fiscalYearCloses)
     .where(
@@ -202,9 +211,13 @@ export async function closeFiscalYear(entityId: string, startYear: number, userI
   }
 
   // Period rows must exist; the final one must be open so the closing JE can post
-  await ensureYearPeriods(entityId, startYear);
-  if (endYear !== startYear) await ensureYearPeriods(entityId, endYear);
-  const [finalPeriod] = await db
+  await assertSuspenseClear(entityId, range.end, tx);
+  const activity = await tx.execute(sql`SELECT 1 FROM journal_entries
+    WHERE entity_id=${entityId} AND status IN ('posted','voided') AND date BETWEEN ${range.start} AND ${range.end} LIMIT 1`);
+  if (!activity.rows.length) throw new YearEndError("Cannot close a fiscal year with no posted activity");
+  await ensureYearPeriods(entityId, startYear, tx);
+  if (endYear !== startYear) await ensureYearPeriods(entityId, endYear, tx);
+  const [finalPeriod] = await tx
     .select()
     .from(periods)
     .where(
@@ -216,10 +229,9 @@ export async function closeFiscalYear(entityId: string, startYear: number, userI
     );
   }
 
-  const balances = await plBalancesAsOf(entityId, range.end);
+  const balances = await plBalancesAsOf(entityId, range.end, tx);
   const netProfit = balances.reduce((s, b) => s.plus(b.net), new Decimal(0));
 
-  return withTransaction(async (tx) => {
     let jeId: string | null = null;
     let jeNumber: number | null = null;
 
@@ -296,55 +308,59 @@ export async function closeFiscalYear(entityId: string, startYear: number, userI
   });
 }
 
-export async function reopenFiscalYear(entityId: string, closeId: string, userId: string) {
-  const [close] = await db
-    .select()
-    .from(fiscalYearCloses)
-    .where(and(eq(fiscalYearCloses.id, closeId), eq(fiscalYearCloses.entityId, entityId)));
-  if (!close) throw new YearEndError("Close record not found");
-  if (close.reopenedAt) throw new YearEndError(`${close.label} was already reopened`);
+export async function reopenFiscalYear(entityId: string, closeId: string, userId: string, reason: string) {
+  if (reason.trim().length < 5) throw new YearEndError("Enter a reopening reason of at least five characters");
+  return db.transaction(async (tx) => {
+    await tx.select({ id: entities.id }).from(entities).where(eq(entities.id, entityId)).for("update");
+    const [close] = await tx
+      .select()
+      .from(fiscalYearCloses)
+      .where(and(eq(fiscalYearCloses.id, closeId), eq(fiscalYearCloses.entityId, entityId))).for("update");
+    if (!close) throw new YearEndError("Close record not found");
+    if (close.reopenedAt) throw new YearEndError(`${close.label} was already reopened`);
 
-  // Later active closes must be reopened first — their closing entries would
-  // otherwise double-count the balances this reversal re-opens.
-  const later = await db
-    .select({ label: fiscalYearCloses.label })
-    .from(fiscalYearCloses)
-    .where(
-      and(
-        eq(fiscalYearCloses.entityId, entityId),
-        gte(fiscalYearCloses.startDate, close.endDate),
-        isNull(fiscalYearCloses.reopenedAt)
-      )
-    );
-  if (later.length > 0) {
-    throw new YearEndError(`Reopen ${later[0].label} first — years must be reopened newest-first`);
-  }
+    // Later active closes must be reopened first — their closing entries would
+    // otherwise double-count the balances this reversal re-opens.
+    const later = await tx
+      .select({ label: fiscalYearCloses.label })
+      .from(fiscalYearCloses)
+      .where(
+        and(
+          eq(fiscalYearCloses.entityId, entityId),
+          gte(fiscalYearCloses.startDate, close.endDate),
+          isNull(fiscalYearCloses.reopenedAt)
+        )
+      );
+    if (later.length > 0) {
+      throw new YearEndError(`Reopen ${later[0].label} first — years must be reopened newest-first`);
+    }
 
-  const endYear = Number(close.endDate.slice(0, 4));
-  const endMonth = Number(close.endDate.slice(5, 7));
+    const endYear = Number(close.endDate.slice(0, 4));
+    const endMonth = Number(close.endDate.slice(5, 7));
 
-  // The reversal is dated the year-end day, so that period must be open
-  await setPeriodLock(entityId, endYear, endMonth, false, userId);
+    // The reversal is dated the year-end day, so that period must be open
+    await setPeriodLock(entityId, endYear, endMonth, false, userId, tx, reason);
 
-  let reversalJeNumber: number | null = null;
-  if (close.jeId) {
-    const { reversalJeNumber: n } = await voidJournalEntry(close.jeId, entityId, userId, close.endDate);
-    reversalJeNumber = n;
-  }
+    let reversalJeNumber: number | null = null;
+    if (close.jeId) {
+      const { reversalJeNumber: n } = await voidJournalEntry(close.jeId, entityId, userId, close.endDate, tx);
+      reversalJeNumber = n;
+    }
 
-  await db
-    .update(fiscalYearCloses)
-    .set({ reopenedAt: new Date(), reopenedBy: userId })
-    .where(eq(fiscalYearCloses.id, closeId));
+    await tx
+      .update(fiscalYearCloses)
+      .set({ reopenedAt: new Date(), reopenedBy: userId })
+      .where(eq(fiscalYearCloses.id, closeId));
 
-  await writeAudit(db, {
-    entityId,
-    userId,
-    action: "FY_REOPENED",
-    tableName: "fiscal_year_closes",
-    recordId: closeId,
-    afterState: { label: close.label, reversalJeNumber },
+    await writeAudit(tx, {
+      entityId,
+      userId,
+      action: "FY_REOPENED",
+      tableName: "fiscal_year_closes",
+      recordId: closeId,
+      afterState: { label: close.label, reversalJeNumber, reason: reason.trim() },
+    });
+
+    return { reversalJeNumber };
   });
-
-  return { reversalJeNumber };
 }

@@ -5,7 +5,7 @@ import { cache } from "react";
 import { randomBytes } from "node:crypto";
 import bcrypt from "bcryptjs";
 import { and, eq, gt } from "drizzle-orm";
-import { db } from "@/db";
+import { db, type Db, type Tx } from "@/db";
 import { sessions, users, entities, userEntityAccess } from "@/db/schema";
 
 const SESSION_COOKIE = "session";
@@ -62,10 +62,10 @@ export async function verifyPassword(password: string, hash: string): Promise<bo
   return bcrypt.compare(password, hash);
 }
 
-export async function createSession(userId: string): Promise<void> {
+export async function createSession(userId: string, executor: Db | Tx = db): Promise<void> {
   const token = randomBytes(32).toString("hex");
   const expiresAt = new Date(Date.now() + SESSION_TTL_MS);
-  await db.insert(sessions).values({ token, userId, expiresAt });
+  await executor.insert(sessions).values({ token, userId, expiresAt });
   const cookieStore = await cookies();
   cookieStore.set(SESSION_COOKIE, token, {
     httpOnly: true,
@@ -118,6 +118,12 @@ export const getCurrentUser = cache(async (): Promise<SessionUser | null> => {
 export async function requireUser(): Promise<SessionUser> {
   const user = await getCurrentUser();
   if (!user) redirect("/login");
+  // Every protected entry point (including actions and exports) uses this guard.
+  if (user.role !== "platform_admin") {
+    if (!user.firmId) redirect("/no-access");
+    const { firmAccessState } = await import("@/services/subscriptions");
+    if (!(await firmAccessState(user.firmId)).allowed) redirect("/suspended");
+  }
   return user;
 }
 
@@ -158,7 +164,7 @@ export async function requireFirmOwner(): Promise<SessionUser & { firmId: string
  */
 export async function assertEntityAccess(user: SessionUser, entityId: string): Promise<void> {
   const entityRows = await db
-    .select({ id: entities.id, firmId: entities.firmId })
+    .select({ id: entities.id, firmId: entities.firmId, isActive: entities.isActive })
     .from(entities)
     .where(eq(entities.id, entityId));
   const entity = entityRows[0];
@@ -167,6 +173,7 @@ export async function assertEntityAccess(user: SessionUser, entityId: string): P
   // Platform admins reach any firm's books for support (audit-logged by the
   // support-access route, not here).
   if (user.role === "platform_admin") return;
+  if (!entity.isActive) throw new Error("Access denied to this entity");
   // Whoever runs the firm reaches every client of that firm.
   if ((user.role === "firm_admin" || user.role === "firm_owner") && entity.firmId === user.firmId) {
     return;

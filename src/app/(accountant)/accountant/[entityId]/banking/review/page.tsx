@@ -1,5 +1,6 @@
 import { listBankTransactions } from "@/services/bank-import";
 import { listAccounts } from "@/services/coa";
+import { allowsBankCategory } from "@/lib/account-policy";
 import { PageHeader, EmptyState } from "@/components/ui";
 import { IconCheck, IconPlus } from "@/components/icons";
 import { ReviewQueue } from "./review-queue";
@@ -21,7 +22,7 @@ export default async function ReviewPage({
 
   // Bank/cash accounts are the other side of these entries, so exclude them
   const categoryAccounts = accounts
-    .filter((a) => a.isActive && a.subType !== "cash_and_bank")
+    .filter(allowsBankCategory)
     .map((a) => ({ id: a.id, label: `${a.accountNumber} — ${a.name}` }));
 
   const uncategorised = transactions.filter((t) => !t.categoryAccountId).length;

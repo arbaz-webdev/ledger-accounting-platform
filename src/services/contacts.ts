@@ -30,28 +30,30 @@ export async function createContact(
   },
   userId: string
 ) {
-  const [contact] = await db
-    .insert(contacts)
-    .values({
-      entityId: input.entityId,
-      type: input.type,
-      name: input.name.trim(),
-      email: input.email?.trim() || null,
-      phone: input.phone?.trim() || null,
-      address: input.address?.trim() || null,
-      paymentTermsDays: input.paymentTermsDays ?? 30,
-    })
-    .returning();
+  return db.transaction(async (tx) => {
+    const [contact] = await tx
+      .insert(contacts)
+      .values({
+        entityId: input.entityId,
+        type: input.type,
+        name: input.name.trim(),
+        email: input.email?.trim() || null,
+        phone: input.phone?.trim() || null,
+        address: input.address?.trim() || null,
+        paymentTermsDays: input.paymentTermsDays ?? 30,
+      })
+      .returning();
 
-  await writeAudit(db, {
-    entityId: input.entityId,
-    userId,
-    action: "CONTACT_CREATED",
-    tableName: "contacts",
-    recordId: contact.id,
-    afterState: { name: contact.name, type: contact.type },
+    await writeAudit(tx, {
+      entityId: input.entityId,
+      userId,
+      action: "CONTACT_CREATED",
+      tableName: "contacts",
+      recordId: contact.id,
+      afterState: { name: contact.name, type: contact.type },
+    });
+    return contact;
   });
-  return contact;
 }
 
 export async function setContactActive(
@@ -60,20 +62,22 @@ export async function setContactActive(
   isActive: boolean,
   userId: string
 ) {
-  const [contact] = await db
-    .update(contacts)
-    .set({ isActive })
-    .where(and(eq(contacts.id, contactId), eq(contacts.entityId, entityId)))
-    .returning();
-  if (!contact) throw new Error("Contact not found");
+  return db.transaction(async (tx) => {
+    const [contact] = await tx
+      .update(contacts)
+      .set({ isActive })
+      .where(and(eq(contacts.id, contactId), eq(contacts.entityId, entityId)))
+      .returning();
+    if (!contact) throw new Error("Contact not found");
 
-  await writeAudit(db, {
-    entityId,
-    userId,
-    action: "CONTACT_UPDATED",
-    tableName: "contacts",
-    recordId: contactId,
-    afterState: { name: contact.name, isActive },
+    await writeAudit(tx, {
+      entityId,
+      userId,
+      action: "CONTACT_UPDATED",
+      tableName: "contacts",
+      recordId: contactId,
+      afterState: { name: contact.name, isActive },
+    });
+    return contact;
   });
-  return contact;
 }

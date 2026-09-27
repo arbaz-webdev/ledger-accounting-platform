@@ -20,6 +20,7 @@ export default async function PlatformLayout({ children }: { children: React.Rea
   return (
     <div className="flex min-h-screen">
       <aside className="sidebar sticky top-0 flex h-screen w-[14.75rem] shrink-0 flex-col">
+        <a href="/security" className="btn btn-ghost">Account security</a>
         <div className="px-5 pb-4 pt-5">
           <Wordmark dark />
         </div>

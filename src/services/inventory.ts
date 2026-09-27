@@ -62,33 +62,35 @@ export type ItemInput = {
 };
 
 export async function createItem(input: ItemInput, userId: string) {
-  if (!input.sku.trim()) throw new InventoryError("SKU is required");
-  if (!input.name.trim()) throw new InventoryError("Item name is required");
+  return db.transaction(async (tx) => {
+    if (!input.sku.trim()) throw new InventoryError("SKU is required");
+    if (!input.name.trim()) throw new InventoryError("Item name is required");
 
-  const [item] = await db
-    .insert(inventoryItems)
-    .values({
+    const [item] = await tx
+      .insert(inventoryItems)
+      .values({
+        entityId: input.entityId,
+        sku: input.sku.trim(),
+        name: input.name.trim(),
+        description: input.description || undefined,
+        costingMethod: input.costingMethod,
+        unit: input.unit?.trim() || "unit",
+        salesPrice: String(input.salesPrice || 0),
+        createdBy: userId,
+      })
+      .returning();
+
+    await writeAudit(tx, {
       entityId: input.entityId,
-      sku: input.sku.trim(),
-      name: input.name.trim(),
-      description: input.description || undefined,
-      costingMethod: input.costingMethod,
-      unit: input.unit?.trim() || "unit",
-      salesPrice: String(input.salesPrice || 0),
-      createdBy: userId,
-    })
-    .returning();
+      userId,
+      action: "ITEM_CREATED",
+      tableName: "inventory_items",
+      recordId: item.id,
+      afterState: { sku: item.sku, name: item.name, costingMethod: item.costingMethod },
+    });
 
-  await writeAudit(db, {
-    entityId: input.entityId,
-    userId,
-    action: "ITEM_CREATED",
-    tableName: "inventory_items",
-    recordId: item.id,
-    afterState: { sku: item.sku, name: item.name, costingMethod: item.costingMethod },
+    return item;
   });
-
-  return item;
 }
 
 export async function updateItem(
@@ -97,35 +99,37 @@ export async function updateItem(
   input: Omit<ItemInput, "entityId" | "costingMethod">,
   userId: string
 ) {
-  const [existing] = await db
-    .select()
-    .from(inventoryItems)
-    .where(and(eq(inventoryItems.id, itemId), eq(inventoryItems.entityId, entityId)));
-  if (!existing) throw new InventoryError("Item not found");
-  if (!input.sku.trim()) throw new InventoryError("SKU is required");
-  if (!input.name.trim()) throw new InventoryError("Item name is required");
+  return db.transaction(async (tx) => {
+    const [existing] = await tx
+      .select()
+      .from(inventoryItems)
+      .where(and(eq(inventoryItems.id, itemId), eq(inventoryItems.entityId, entityId)));
+    if (!existing) throw new InventoryError("Item not found");
+    if (!input.sku.trim()) throw new InventoryError("SKU is required");
+    if (!input.name.trim()) throw new InventoryError("Item name is required");
 
-  // Costing method is deliberately NOT editable: switching methods mid-life
-  // rewrites the meaning of existing layers. Create a new item instead.
-  await db
-    .update(inventoryItems)
-    .set({
-      sku: input.sku.trim(),
-      name: input.name.trim(),
-      description: input.description || null,
-      unit: input.unit?.trim() || "unit",
-      salesPrice: String(input.salesPrice || 0),
-    })
-    .where(eq(inventoryItems.id, itemId));
+    // Costing method is deliberately NOT editable: switching methods mid-life
+    // rewrites the meaning of existing layers. Create a new item instead.
+    await tx
+      .update(inventoryItems)
+      .set({
+        sku: input.sku.trim(),
+        name: input.name.trim(),
+        description: input.description || null,
+        unit: input.unit?.trim() || "unit",
+        salesPrice: String(input.salesPrice || 0),
+      })
+      .where(eq(inventoryItems.id, itemId));
 
-  await writeAudit(db, {
-    entityId,
-    userId,
-    action: "ITEM_UPDATED",
-    tableName: "inventory_items",
-    recordId: itemId,
-    beforeState: { sku: existing.sku, name: existing.name },
-    afterState: { sku: input.sku, name: input.name },
+    await writeAudit(tx, {
+      entityId,
+      userId,
+      action: "ITEM_UPDATED",
+      tableName: "inventory_items",
+      recordId: itemId,
+      beforeState: { sku: existing.sku, name: existing.name },
+      afterState: { sku: input.sku, name: input.name },
+    });
   });
 }
 
@@ -135,20 +139,22 @@ export async function setItemActive(
   isActive: boolean,
   userId: string
 ) {
-  const [existing] = await db
-    .select()
-    .from(inventoryItems)
-    .where(and(eq(inventoryItems.id, itemId), eq(inventoryItems.entityId, entityId)));
-  if (!existing) throw new InventoryError("Item not found");
+  return db.transaction(async (tx) => {
+    const [existing] = await tx
+      .select()
+      .from(inventoryItems)
+      .where(and(eq(inventoryItems.id, itemId), eq(inventoryItems.entityId, entityId)));
+    if (!existing) throw new InventoryError("Item not found");
 
-  await db.update(inventoryItems).set({ isActive }).where(eq(inventoryItems.id, itemId));
-  await writeAudit(db, {
-    entityId,
-    userId,
-    action: isActive ? "ITEM_ACTIVATED" : "ITEM_DEACTIVATED",
-    tableName: "inventory_items",
-    recordId: itemId,
-    afterState: { isActive },
+    await tx.update(inventoryItems).set({ isActive }).where(eq(inventoryItems.id, itemId));
+    await writeAudit(tx, {
+      entityId,
+      userId,
+      action: isActive ? "ITEM_ACTIVATED" : "ITEM_DEACTIVATED",
+      tableName: "inventory_items",
+      recordId: itemId,
+      afterState: { isActive },
+    });
   });
 }
 
@@ -228,7 +234,7 @@ export async function getItem(itemId: string, entityId: string) {
 }
 
 /** Subledger total vs the GL inventory account — surfaced on the items page. */
-export async function inventoryGlTieOut(entityId: string) {
+export async function inventoryGlTieOut(entityId: string, asOf = "9999-12-31") {
   const inventoryAccountId = await resolveMapping(entityId, "inventory_asset");
   const [account] = await db
     .select({ number: chartOfAccounts.accountNumber, name: chartOfAccounts.name })
@@ -240,14 +246,18 @@ export async function inventoryGlTieOut(entityId: string) {
     FROM journal_entry_lines jel
     JOIN journal_entries je ON je.id = jel.je_id
     WHERE jel.account_id = ${inventoryAccountId}
+      AND je.entity_id = ${entityId} AND je.date <= ${asOf}
       AND je.status IN ('posted', 'voided')
   `);
   const glBalance = new Decimal(String((glRows.rows[0] as { balance: string }).balance));
 
   const subRows = await db.execute(sql`
-    SELECT COALESCE(SUM(l.cost_remaining), 0) AS value
-    FROM inventory_lots l
-    WHERE l.entity_id = ${entityId} AND l.qty_remaining > 0
+    SELECT COALESCE(SUM(CASE WHEN m.kind IN ('receipt','adjust_in')
+      THEN m.total_cost ELSE -m.total_cost END), 0) AS value
+    FROM inventory_movements m
+    JOIN journal_entries je ON je.id = m.je_id
+    WHERE m.entity_id = ${entityId} AND m.date <= ${asOf}
+      AND je.entity_id = ${entityId} AND je.status IN ('posted','voided')
   `);
   const subledger = new Decimal(String((subRows.rows[0] as { value: string }).value));
 

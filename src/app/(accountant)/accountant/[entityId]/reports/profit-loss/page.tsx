@@ -113,7 +113,7 @@ export default async function ProfitLossPage({
 
             {pl.incomeTax.lines.length > 0 && (
               <>
-                <Section label="Income tax" />
+                <Section label={pl.incomeTax.total.startsWith("-") ? "Income tax credit" : "Income tax expense"} />
                 {acctLines(pl.incomeTax.lines)}
               </>
             )}

@@ -46,6 +46,8 @@ export function PayRunLinesEditor({
       (s, l) => {
         const { gross, net } = computeNet(l);
         return {
+          basic: s.basic.plus(l.basicSalary || 0),
+          allowances: s.allowances.plus(l.allowances || 0),
           gross: s.gross.plus(gross),
           incomeTax: s.incomeTax.plus(l.incomeTaxAmount || 0),
           eobiEmployee: s.eobiEmployee.plus(l.eobiEmployeeAmount || 0),
@@ -55,6 +57,8 @@ export function PayRunLinesEditor({
         };
       },
       {
+        basic: new Decimal(0),
+        allowances: new Decimal(0),
         gross: new Decimal(0),
         incomeTax: new Decimal(0),
         eobiEmployee: new Decimal(0),
@@ -158,8 +162,8 @@ export function PayRunLinesEditor({
           <tfoot>
             <tr className="font-semibold">
               <td>Total</td>
-              <td className="td-num">—</td>
-              <td className="td-num">—</td>
+              <td className="td-num">{fmtMoney(totals.basic.toFixed(2))}</td>
+              <td className="td-num">{fmtMoney(totals.allowances.toFixed(2))}</td>
               <td className="td-num">{fmtMoney(totals.gross.toFixed(2))}</td>
               <td className="td-num">{fmtMoney(totals.incomeTax.toFixed(2))}</td>
               <td className="td-num">{fmtMoney(totals.eobiEmployee.toFixed(2))}</td>

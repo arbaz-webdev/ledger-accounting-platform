@@ -1,10 +1,8 @@
 import { notFound } from "next/navigation";
-import { eq, and } from "drizzle-orm";
-import { db } from "@/db";
-import { chartOfAccounts } from "@/db/schema";
+import { listCashBankAccounts } from "@/services/coa";
 import { getInvoice } from "@/services/invoices";
 import { resolveMapping } from "@/services/mappings";
-import { fmtDate, fmtMoney, todayIso } from "@/lib/format";
+import { fmtDate, fmtMoney, fmtUnitPrice, todayIso } from "@/lib/format";
 import { PageHeader } from "@/components/ui";
 import { postInvoiceAction, discardInvoiceAction, settleInvoiceAction } from "../actions";
 
@@ -35,10 +33,7 @@ export default async function InvoiceDetailPage({
   if (!data) notFound();
   const { invoice, customer, lines, settlements, outstanding } = data;
 
-  const bankAccounts = await db
-    .select({ id: chartOfAccounts.id, number: chartOfAccounts.accountNumber, name: chartOfAccounts.name })
-    .from(chartOfAccounts)
-    .where(and(eq(chartOfAccounts.entityId, entityId), eq(chartOfAccounts.type, "asset")));
+  const bankAccounts = await listCashBankAccounts(entityId);
   const defaultBank = await resolveMapping(entityId, "default_bank").catch(() => null);
 
   const isOpen = invoice.status === "posted" && Number(outstanding) > 0;
@@ -109,7 +104,7 @@ export default async function InvoiceDetailPage({
                   {l.accountName}
                 </td>
                 <td className="td-num">{Number(l.quantity)}</td>
-                <td className="td-num">{fmtMoney(l.unitPrice)}</td>
+                <td className="td-num">{fmtUnitPrice(l.unitPrice)}</td>
                 <td className="td-num">{fmtMoney(l.taxAmount)}</td>
                 <td className="td-num">{fmtMoney(l.netAmount)}</td>
               </tr>

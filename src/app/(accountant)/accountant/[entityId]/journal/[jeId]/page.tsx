@@ -46,7 +46,7 @@ export default async function JournalEntryDetail({
         title={`Journal entry ${je.jeNumber ? `#${je.jeNumber}` : "(draft)"}`}
         sub={`${fmtDate(je.date)} · ${je.sourceModule.toUpperCase()}${je.reference ? ` · Ref ${je.reference}` : ""}`}
       >
-        {je.status === "posted" && (
+        {je.status === "posted" && !je.reversesJeId && ["manual", "system"].includes(je.sourceModule) && (
           <form action={voidJournalEntryAction}>
             <input type="hidden" name="entityId" value={entityId} />
             <input type="hidden" name="jeId" value={je.id} />
@@ -87,7 +87,7 @@ export default async function JournalEntryDetail({
               href={`/accountant/${entityId}/journal/${je.voidedByJeId}`}
               className="font-medium underline-offset-2 hover:underline"
             >
-              This entry was voided — view the reversal entry →
+              This entry was reversed — view the reversal entry →
             </a>
           )}
           {je.reversesJeId && (

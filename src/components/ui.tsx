@@ -35,7 +35,7 @@ const JE_BADGES: Record<string, { cls: string; label: string }> = {
   draft: { cls: "badge-draft", label: "Draft" },
   pending_approval: { cls: "badge-pending", label: "Pending approval" },
   posted: { cls: "badge-posted", label: "Posted" },
-  voided: { cls: "badge-voided", label: "Voided" },
+  voided: { cls: "badge-voided", label: "Reversed" },
 };
 
 export function StatusBadge({ status }: { status: string }) {

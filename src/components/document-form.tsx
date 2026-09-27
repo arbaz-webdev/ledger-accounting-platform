@@ -3,6 +3,8 @@
 import { useMemo, useState, useTransition } from "react";
 import { IconPlus } from "@/components/icons";
 import { fmtMoney } from "@/lib/format";
+import Decimal from "decimal.js";
+import { previewDocumentLine } from "@/lib/document-math";
 
 export type Option = { id: string; label: string };
 export type ItemOption = { id: string; label: string; salesPrice: string };
@@ -88,14 +90,14 @@ export function DocumentForm({
   const [pending, startTransition] = useTransition();
 
   const totals = useMemo(() => {
-    let net = 0;
-    let tax = 0;
+    let net = new Decimal(0);
+    let tax = new Decimal(0);
     for (const l of lines) {
-      const lineNet = (Number(l.quantity) || 0) * (Number(l.unitPrice) || 0);
-      net += lineNet;
-      tax += (lineNet * (Number(l.taxRate) || 0)) / 100;
+      const computed = previewDocumentLine(l);
+      net = net.plus(computed.net);
+      tax = tax.plus(computed.tax);
     }
-    return { net, tax, total: net + tax };
+    return { net: net.toFixed(2), tax: tax.toFixed(2), total: net.plus(tax).toFixed(2) };
   }, [lines]);
 
   function updateLine(i: number, patch: Partial<LineDraft>) {
@@ -129,7 +131,7 @@ export function DocumentForm({
 
   const valid =
     contactId !== "" &&
-    totals.total > 0 &&
+    new Decimal(totals.total).greaterThan(0) &&
     lines.some((l) => l.accountId && l.description.trim() && Number(l.quantity) > 0);
 
   function submit(postNow: boolean) {
@@ -233,8 +235,8 @@ export function DocumentForm({
           </thead>
           <tbody>
             {lines.map((line, i) => {
-              const lineNet = (Number(line.quantity) || 0) * (Number(line.unitPrice) || 0);
-              const lineTotal = lineNet + (lineNet * (Number(line.taxRate) || 0)) / 100;
+              const computed = previewDocumentLine(line);
+              const lineTotal = computed.net.plus(computed.tax).toFixed(2);
               const forcedToInventory = !isInvoice && line.itemId !== "";
               return (
                 <tr key={i}>

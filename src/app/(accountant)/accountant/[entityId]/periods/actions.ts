@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { requireAccountant, assertEntityAccess } from "@/lib/auth";
-import { requireModule } from "@/services/permissions";
+import { requireModuleEdit as requireModule } from "@/services/permissions";
 import { setPeriodLock, ensureYearPeriods } from "@/services/periods";
 import { closeFiscalYear, reopenFiscalYear, YearEndError } from "@/services/year-end";
 import { MappingError } from "@/services/mappings";
@@ -35,7 +35,10 @@ export async function togglePeriodLockAction(formData: FormData): Promise<void> 
     throw new Error("Only firm admins can lock or unlock periods");
   }
 
-  await setPeriodLock(entityId, year, month, lock, user.id);
+  try {
+    if (!lock && formData.get("confirmed") !== "on") throw new Error("Confirm the period unlock");
+    await setPeriodLock(entityId, year, month, lock, user.id, undefined, String(formData.get("reason") ?? ""));
+  } catch (error) { redirect(`/accountant/${entityId}/periods?year=${year}&error=${encodeURIComponent(readable(error, "Period update failed"))}`); }
   revalidatePath(`/accountant/${entityId}/periods`);
 }
 
@@ -50,7 +53,7 @@ export async function setupYearAction(formData: FormData): Promise<void> {
   revalidatePath(`/accountant/${entityId}/periods`);
 }
 
-/** Lock after the close-review checklist. Advisory: warnings never block. */
+/** Lock after review; suspense is rechecked by the service and blocks locking. */
 export async function confirmLockAction(formData: FormData): Promise<void> {
   const user = await requireAccountant();
   const entityId = String(formData.get("entityId"));
@@ -63,7 +66,8 @@ export async function confirmLockAction(formData: FormData): Promise<void> {
     throw new Error("Only firm admins can lock or unlock periods");
   }
 
-  await setPeriodLock(entityId, year, month, true, user.id);
+  try { await setPeriodLock(entityId, year, month, true, user.id); }
+  catch (error) { redirect(`/accountant/${entityId}/periods?year=${year}&error=${encodeURIComponent(readable(error, "Period locking failed"))}`); }
   revalidatePath(`/accountant/${entityId}/periods`);
   redirect(`/accountant/${entityId}/periods?year=${year}`);
 }
@@ -103,7 +107,8 @@ export async function reopenYearAction(formData: FormData): Promise<void> {
 
   const base = `/accountant/${entityId}/periods/year-end?year=${startYear}`;
   try {
-    await reopenFiscalYear(entityId, closeId, user.id);
+    if (formData.get("confirmed") !== "on") throw new Error("Confirm the fiscal-year reopening");
+    await reopenFiscalYear(entityId, closeId, user.id, String(formData.get("reason") ?? ""));
   } catch (err) {
     redirect(`${base}&error=${encodeURIComponent(readable(err, "Failed to reopen the year"))}`);
   }

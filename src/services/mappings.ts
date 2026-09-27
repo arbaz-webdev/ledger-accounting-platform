@@ -1,6 +1,6 @@
 import "server-only";
 import { and, eq } from "drizzle-orm";
-import { db } from "@/db";
+import { db, type Db, type Tx } from "@/db";
 import { accountMappings, chartOfAccounts } from "@/db/schema";
 import { writeAudit } from "@/services/audit";
 
@@ -234,8 +234,8 @@ export class MappingError extends Error {
 }
 
 /** All configured mappings for an entity, keyed by mapping key. */
-export async function getMappings(entityId: string): Promise<Map<MappingKey, string>> {
-  const rows = await db
+export async function getMappings(entityId: string, executor: Db | Tx = db): Promise<Map<MappingKey, string>> {
+  const rows = await executor
     .select({ key: accountMappings.key, accountId: accountMappings.accountId })
     .from(accountMappings)
     .where(eq(accountMappings.entityId, entityId));
@@ -252,12 +252,23 @@ export async function resolveMapping(
   key: MappingKey,
   cache?: Map<MappingKey, string>
 ): Promise<string> {
+  const validateResolved = (account: { id: string; type: string; subType: string | null }) => {
+    const types: Partial<Record<MappingKey, string>> = { default_bank: "asset", ar_control: "asset", ap_control: "liability", inventory_asset: "asset", retained_earnings: "equity", input_tax: "asset", suspense: "asset" };
+    if (types[key] && account.type !== types[key]) throw new MappingError(`Review the ${key} mapping and account classification before use`);
+    if (key === "default_bank" && account.subType !== "cash_and_bank") throw new MappingError("Default bank must be a cash/bank account");
+    return account.id;
+  };
   const mapped = cache ? cache.get(key) : (await getMappings(entityId)).get(key);
-  if (mapped) return mapped;
+  if (mapped) {
+    const [account] = await db.select().from(chartOfAccounts)
+      .where(and(eq(chartOfAccounts.entityId, entityId), eq(chartOfAccounts.id, mapped)));
+    if (!account) throw new MappingError("Mapped account does not belong to this entity");
+    return validateResolved(account);
+  }
 
   const def = MAPPING_DEFS.find((d) => d.key === key)!;
   const rows = await db
-    .select({ id: chartOfAccounts.id })
+    .select({ id: chartOfAccounts.id, type: chartOfAccounts.type, subType: chartOfAccounts.subType })
     .from(chartOfAccounts)
     .where(
       and(
@@ -265,7 +276,7 @@ export async function resolveMapping(
         eq(chartOfAccounts.accountNumber, def.defaultAccountNumber)
       )
     );
-  if (rows[0]) return rows[0].id;
+  if (rows[0]) return validateResolved(rows[0]);
 
   throw new MappingError(
     `No account mapped for "${def.label}" and default account ${def.defaultAccountNumber} does not exist. Configure it under Account Mapping.`
@@ -273,9 +284,9 @@ export async function resolveMapping(
 }
 
 /** Seed any missing mappings from the default COA. Idempotent. */
-export async function seedDefaultMappings(entityId: string): Promise<number> {
-  const existing = await getMappings(entityId);
-  const accounts = await db
+export async function seedDefaultMappings(entityId: string, executor: Db | Tx = db): Promise<number> {
+  const existing = await getMappings(entityId, executor);
+  const accounts = await executor
     .select({ id: chartOfAccounts.id, number: chartOfAccounts.accountNumber })
     .from(chartOfAccounts)
     .where(eq(chartOfAccounts.entityId, entityId));
@@ -289,7 +300,7 @@ export async function seedDefaultMappings(entityId: string): Promise<number> {
   });
 
   if (toInsert.length === 0) return 0;
-  await db.insert(accountMappings).values(toInsert).onConflictDoNothing();
+  await executor.insert(accountMappings).values(toInsert).onConflictDoNothing();
   return toInsert.length;
 }
 
@@ -299,23 +310,45 @@ export async function setMapping(
   accountId: string,
   userId: string
 ): Promise<void> {
-  const def = MAPPING_DEFS.find((d) => d.key === key);
-  if (!def) throw new MappingError(`Unknown mapping key: ${key}`);
+  return db.transaction(async (tx) => {
+    const def = MAPPING_DEFS.find((d) => d.key === key);
+    if (!def) throw new MappingError(`Unknown mapping key: ${key}`);
+    const [account] = await tx.select().from(chartOfAccounts)
+      .where(and(eq(chartOfAccounts.entityId, entityId), eq(chartOfAccounts.id, accountId)));
+    if (!account || !account.isActive) throw new MappingError("Select an active account belonging to this entity");
+    const purpose: Partial<Record<MappingKey, [string, string | null]>> = {
+      default_bank: ["asset", "cash_and_bank"], ar_control: ["asset", "receivable"],
+      ap_control: ["liability", "payable"], inventory_asset: ["asset", "inventory"],
+      retained_earnings: ["equity", null], suspense: ["asset", "suspense"],
+      sales_revenue: ["revenue", null], fx_gain: ["other_income", null], fx_loss: ["other_expense", null],
+      sales_tax_payable: ["liability", "tax"], input_tax: ["asset", "tax"],
+      sales_discounts: ["revenue", "contra_revenue"], purchase_discounts: ["cogs", "contra_cogs"],
+      cogs: ["cogs", null], default_expense: ["expense", null], bad_debt_expense: ["expense", null],
+      salaries_payable: ["liability", "payroll"], income_tax_payable: ["liability", "payroll"],
+      eobi_payable: ["liability", "payroll"], payroll_tax_payable: ["liability", "payroll"],
+      salaries_expense: ["expense", null], payroll_tax_expense: ["expense", null],
+      inventory_writedown: ["expense", null], grni: ["liability", null],
+    };
+    const expected = purpose[key];
+    if (expected && (account.type !== expected[0] || (expected[1] && account.subType !== expected[1]))) {
+      throw new MappingError(`Account is not suitable for ${def.label}`);
+    }
 
-  await db
-    .insert(accountMappings)
-    .values({ entityId, module: def.module, key, accountId, updatedAt: new Date() })
-    .onConflictDoUpdate({
-      target: [accountMappings.entityId, accountMappings.module, accountMappings.key],
-      set: { accountId, updatedAt: new Date() },
-    });
+    await tx
+      .insert(accountMappings)
+      .values({ entityId, module: def.module, key, accountId, updatedAt: new Date() })
+      .onConflictDoUpdate({
+        target: [accountMappings.entityId, accountMappings.module, accountMappings.key],
+        set: { accountId, updatedAt: new Date() },
+      });
 
-  await writeAudit(db, {
-    entityId,
-    userId,
-    action: "MAPPING_UPDATED",
-    tableName: "account_mappings",
-    recordId: key,
-    afterState: { key, accountId },
+    await writeAudit(tx, {
+      entityId,
+      userId,
+      action: "MAPPING_UPDATED",
+      tableName: "account_mappings",
+      recordId: key,
+      afterState: { key, accountId },
+  });
   });
 }

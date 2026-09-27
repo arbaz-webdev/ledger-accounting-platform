@@ -14,6 +14,8 @@ import { loadActiveRules, matchRule, bumpRuleUsage } from "@/services/bank-rules
 import { postJournalEntry } from "@/services/journal";
 import { resolveMapping } from "@/services/mappings";
 import { writeAudit } from "@/services/audit";
+import { assertPostingAccount } from "@/services/account-policy";
+import { listCashBankAccounts } from "@/services/coa";
 
 /**
  * Bank statement import (spec 5.1):
@@ -124,124 +126,127 @@ export async function importTransactions(
   },
   userId: string
 ): Promise<ImportResult> {
-  const preview = buildPreview(input.csvText, input.mapping);
-  const valid = preview.rows.filter((r) => !r.error);
-  if (valid.length === 0) {
-    throw new BankImportError(
-      `No usable rows found. ${preview.errorCount} row(s) failed validation — check the column mapping.`
-    );
-  }
-
-  const rules = await loadActiveRules(input.entityId);
-
-  // Existing fingerprints for exact-duplicate detection
-  const existing = await db
-    .select({ hash: bankTransactions.dedupeHash })
-    .from(bankTransactions)
-    .where(eq(bankTransactions.entityId, input.entityId));
-  const seen = new Set(existing.map((e) => e.hash));
-
-  // Existing (date, amount) pairs on this account for near-duplicate detection
-  const near = await db
-    .select({ date: bankTransactions.txnDate, amount: bankTransactions.amount })
-    .from(bankTransactions)
-    .where(eq(bankTransactions.bankAccountId, input.bankAccountId));
-
-  const [batch] = await db
-    .insert(bankImportBatches)
-    .values({
-      entityId: input.entityId,
-      bankAccountId: input.bankAccountId,
-      filename: input.filename,
-      rowCount: preview.rows.length,
-      createdBy: userId,
-    })
-    .returning();
-
-  const toInsert: (typeof bankTransactions.$inferInsert)[] = [];
-  const appliedRuleIds: string[] = [];
-  let duplicates = 0;
-  let flagged = 0;
-
-  for (const row of valid) {
-    const amountStr = new Decimal(row.amount!).toFixed(2);
-    const hash = dedupeHash(
-      input.entityId,
-      input.bankAccountId,
-      row.date!,
-      amountStr,
-      row.description
-    );
-    if (seen.has(hash)) {
-      duplicates++;
-      continue;
+  return db.transaction(async (tx) => {
+    await assertPostingAccount(input.entityId, input.bankAccountId, "bank", tx);
+    const preview = buildPreview(input.csvText, input.mapping);
+    const valid = preview.rows.filter((r) => !r.error);
+    if (valid.length === 0) {
+      throw new BankImportError(
+        `No usable rows found. ${preview.errorCount} row(s) failed validation — check the column mapping.`
+      );
     }
-    seen.add(hash);
 
-    // near-duplicate: same amount on this account within ±3 days
-    const rowMs = Date.parse(`${row.date}T00:00:00Z`);
-    const isNearDup = near.some(
-      (e) =>
-        new Decimal(e.amount).toFixed(2) === amountStr &&
-        Math.abs(Date.parse(`${String(e.date).slice(0, 10)}T00:00:00Z`) - rowMs) <=
-          3 * 86_400_000
-    );
-    if (isNearDup) flagged++;
+    const rules = await loadActiveRules(input.entityId);
 
-    const rule = matchRule(rules, row.description, row.amount!);
-    if (rule) appliedRuleIds.push(rule.id);
+    // Existing fingerprints for exact-duplicate detection
+    const existing = await tx
+      .select({ hash: bankTransactions.dedupeHash })
+      .from(bankTransactions)
+      .where(eq(bankTransactions.entityId, input.entityId));
+    const seen = new Set(existing.map((e) => e.hash));
 
-    toInsert.push({
-      entityId: input.entityId,
+    // Existing (date, amount) pairs on this account for near-duplicate detection
+    const near = await tx
+      .select({ date: bankTransactions.txnDate, amount: bankTransactions.amount })
+      .from(bankTransactions)
+      .where(eq(bankTransactions.bankAccountId, input.bankAccountId));
+
+    const [batch] = await tx
+      .insert(bankImportBatches)
+      .values({
+        entityId: input.entityId,
+        bankAccountId: input.bankAccountId,
+        filename: input.filename,
+        rowCount: preview.rows.length,
+        createdBy: userId,
+      })
+      .returning();
+
+    const toInsert: (typeof bankTransactions.$inferInsert)[] = [];
+    const appliedRuleIds: string[] = [];
+    let duplicates = 0;
+    let flagged = 0;
+
+    for (const row of valid) {
+      const amountStr = new Decimal(row.amount!).toFixed(2);
+      const hash = dedupeHash(
+        input.entityId,
+        input.bankAccountId,
+        row.date!,
+        amountStr,
+        row.description
+      );
+      if (seen.has(hash)) {
+        duplicates++;
+        continue;
+      }
+      seen.add(hash);
+
+      // near-duplicate: same amount on this account within ±3 days
+      const rowMs = Date.parse(`${row.date}T00:00:00Z`);
+      const isNearDup = near.some(
+        (e) =>
+          new Decimal(e.amount).toFixed(2) === amountStr &&
+          Math.abs(Date.parse(`${String(e.date).slice(0, 10)}T00:00:00Z`) - rowMs) <=
+            3 * 86_400_000
+      );
+      if (isNearDup) flagged++;
+
+      const rule = matchRule(rules, row.description, row.amount!);
+      if (rule) appliedRuleIds.push(rule.id);
+
+      toInsert.push({
+        entityId: input.entityId,
+        batchId: batch.id,
+        bankAccountId: input.bankAccountId,
+        txnDate: row.date!,
+        description: row.description,
+        amount: amountStr,
+        statementBalance: row.balance !== null ? new Decimal(row.balance).toFixed(2) : null,
+        status: rule ? "categorised" : "pending",
+        categoryAccountId: rule?.accountId ?? null,
+        matchedRuleId: rule?.id ?? null,
+        dedupeHash: hash,
+        possibleDuplicate: isNearDup,
+      });
+    }
+
+    if (toInsert.length > 0) {
+      await tx.insert(bankTransactions).values(toInsert);
+    }
+    if (appliedRuleIds.length > 0) {
+      await bumpRuleUsage(appliedRuleIds, tx);
+    }
+
+    const result: ImportResult = {
       batchId: batch.id,
-      bankAccountId: input.bankAccountId,
-      txnDate: row.date!,
-      description: row.description,
-      amount: amountStr,
-      statementBalance: row.balance !== null ? new Decimal(row.balance).toFixed(2) : null,
-      status: rule ? "categorised" : "pending",
-      categoryAccountId: rule?.accountId ?? null,
-      matchedRuleId: rule?.id ?? null,
-      dedupeHash: hash,
-      possibleDuplicate: isNearDup,
+      imported: toInsert.length,
+      duplicates,
+      rejected: preview.errorCount,
+      categorised: toInsert.filter((t) => t.categoryAccountId).length,
+      flagged,
+    };
+
+    await tx
+      .update(bankImportBatches)
+      .set({
+        importedCount: result.imported,
+        duplicateCount: result.duplicates,
+        rejectedCount: result.rejected,
+      })
+      .where(eq(bankImportBatches.id, batch.id));
+
+    await writeAudit(tx, {
+      entityId: input.entityId,
+      userId,
+      action: "BANK_IMPORT",
+      tableName: "bank_import_batches",
+      recordId: batch.id,
+      afterState: { filename: input.filename, ...result },
     });
-  }
 
-  if (toInsert.length > 0) {
-    await db.insert(bankTransactions).values(toInsert);
-  }
-  if (appliedRuleIds.length > 0) {
-    await bumpRuleUsage(appliedRuleIds);
-  }
-
-  const result: ImportResult = {
-    batchId: batch.id,
-    imported: toInsert.length,
-    duplicates,
-    rejected: preview.errorCount,
-    categorised: toInsert.filter((t) => t.categoryAccountId).length,
-    flagged,
-  };
-
-  await db
-    .update(bankImportBatches)
-    .set({
-      importedCount: result.imported,
-      duplicateCount: result.duplicates,
-      rejectedCount: result.rejected,
-    })
-    .where(eq(bankImportBatches.id, batch.id));
-
-  await writeAudit(db, {
-    entityId: input.entityId,
-    userId,
-    action: "BANK_IMPORT",
-    tableName: "bank_import_batches",
-    recordId: batch.id,
-    afterState: { filename: input.filename, ...result },
+    return result;
   });
-
-  return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -311,51 +316,56 @@ export async function categoriseTransactions(
   accountId: string,
   userId: string
 ) {
-  if (txnIds.length === 0) return 0;
-  const updated = await db
-    .update(bankTransactions)
-    .set({ categoryAccountId: accountId, status: "categorised" })
-    .where(
-      and(
-        eq(bankTransactions.entityId, entityId),
-        inArray(bankTransactions.id, txnIds),
-        sql`${bankTransactions.status} IN ('pending','categorised')`
+  return db.transaction(async (tx) => {
+    if (txnIds.length === 0) return 0;
+    await assertPostingAccount(entityId, accountId, "category", tx);
+    const updated = await tx
+      .update(bankTransactions)
+      .set({ categoryAccountId: accountId, status: "categorised" })
+      .where(
+        and(
+          eq(bankTransactions.entityId, entityId),
+          inArray(bankTransactions.id, txnIds),
+          sql`${bankTransactions.status} IN ('pending','categorised')`
+        )
       )
-    )
-    .returning({ id: bankTransactions.id });
+      .returning({ id: bankTransactions.id });
 
-  await writeAudit(db, {
-    entityId,
-    userId,
-    action: "BANK_TXN_CATEGORISED",
-    tableName: "bank_transactions",
-    afterState: { count: updated.length, accountId },
+    await writeAudit(tx, {
+      entityId,
+      userId,
+      action: "BANK_TXN_CATEGORISED",
+      tableName: "bank_transactions",
+      afterState: { count: updated.length, accountId },
+    });
+    return updated.length;
   });
-  return updated.length;
 }
 
 export async function ignoreTransactions(entityId: string, txnIds: string[], userId: string) {
-  if (txnIds.length === 0) return 0;
-  const updated = await db
-    .update(bankTransactions)
-    .set({ status: "ignored" })
-    .where(
-      and(
-        eq(bankTransactions.entityId, entityId),
-        inArray(bankTransactions.id, txnIds),
-        sql`${bankTransactions.status} IN ('pending','categorised')`
+  return db.transaction(async (tx) => {
+    if (txnIds.length === 0) return 0;
+    const updated = await tx
+      .update(bankTransactions)
+      .set({ status: "ignored" })
+      .where(
+        and(
+          eq(bankTransactions.entityId, entityId),
+          inArray(bankTransactions.id, txnIds),
+          sql`${bankTransactions.status} IN ('pending','categorised')`
+        )
       )
-    )
-    .returning({ id: bankTransactions.id });
+      .returning({ id: bankTransactions.id });
 
-  await writeAudit(db, {
-    entityId,
-    userId,
-    action: "BANK_TXN_IGNORED",
-    tableName: "bank_transactions",
-    afterState: { count: updated.length },
+    await writeAudit(tx, {
+      entityId,
+      userId,
+      action: "BANK_TXN_IGNORED",
+      tableName: "bank_transactions",
+      afterState: { count: updated.length },
+    });
+    return updated.length;
   });
-  return updated.length;
 }
 
 export type PostResult = { posted: number; toSuspense: number; failed: { id: string; error: string }[] };
@@ -365,98 +375,44 @@ export type PostResult = { posted: number; toSuspense: number; failed: { id: str
  * the suspense account so nothing is silently dropped — the accountant clears
  * suspense before period close.
  */
-export async function postBankTransactions(
-  entityId: string,
-  txnIds: string[],
-  userId: string
-): Promise<PostResult> {
-  if (txnIds.length === 0) return { posted: 0, toSuspense: 0, failed: [] };
-
-  const rows = await db
-    .select()
-    .from(bankTransactions)
-    .where(and(eq(bankTransactions.entityId, entityId), inArray(bankTransactions.id, txnIds)))
-    .orderBy(asc(bankTransactions.txnDate));
-
+export async function postBankTransactions(entityId: string, txnIds: string[], userId: string): Promise<PostResult> {
+  const result: PostResult = { posted: 0, toSuspense: 0, failed: [] };
   const suspenseId = await resolveMapping(entityId, "suspense");
-
-  let posted = 0;
-  let toSuspense = 0;
-  const failed: { id: string; error: string }[] = [];
-
-  for (const txn of rows) {
-    if (txn.status === "posted" || txn.status === "ignored") continue;
-
-    const amount = new Decimal(txn.amount);
-    const categoryId = txn.categoryAccountId ?? suspenseId;
-    if (!txn.categoryAccountId) toSuspense++;
-
-    const abs = amount.abs().toFixed(2);
-    const moneyIn = amount.greaterThan(0);
-
-    // money in  → DR bank / CR category ; money out → DR category / CR bank
-    const lines = moneyIn
-      ? [
-          { accountId: txn.bankAccountId, debit: abs },
-          { accountId: categoryId, credit: abs },
-        ]
-      : [
-          { accountId: categoryId, debit: abs },
-          { accountId: txn.bankAccountId, credit: abs },
-        ];
-
+  for (const id of [...new Set(txnIds)]) {
     try {
-      const { jeId } = await postJournalEntry(
-        {
-          entityId,
-          date: txn.txnDate,
-          description: txn.description.slice(0, 200),
-          reference: "Bank import",
-          sourceModule: "bank",
-          lines,
-        },
-        userId
-      );
-      await db
-        .update(bankTransactions)
-        .set({ status: "posted", jeId, categoryAccountId: categoryId })
-        .where(eq(bankTransactions.id, txn.id));
-      posted++;
-    } catch (err) {
-      failed.push({ id: txn.id, error: err instanceof Error ? err.message : "Unknown error" });
+      const posted = await db.transaction(async tx => {
+        const [txn] = await tx.select().from(bankTransactions)
+          .where(and(eq(bankTransactions.id, id), eq(bankTransactions.entityId, entityId))).for("update");
+        if (!txn || txn.status === "posted" || txn.status === "ignored") return null;
+        const amount = new Decimal(txn.amount), abs = amount.abs().toFixed(2);
+        const categoryId = txn.categoryAccountId ?? suspenseId;
+        await assertPostingAccount(entityId, txn.bankAccountId, "bank", tx);
+        await assertPostingAccount(entityId, categoryId, "category", tx, !txn.categoryAccountId);
+        if (categoryId === txn.bankAccountId) throw new BankImportError("Bank and category accounts must differ");
+        const lines = amount.greaterThan(0)
+          ? [{ accountId: txn.bankAccountId, debit: abs }, { accountId: categoryId, credit: abs }]
+          : [{ accountId: categoryId, debit: abs }, { accountId: txn.bankAccountId, credit: abs }];
+        const { jeId } = await postJournalEntry({
+          entityId, date: txn.txnDate, description: txn.description.slice(0, 200),
+          reference: "Bank import", sourceModule: "bank", lines,
+        }, userId, tx);
+        await tx.update(bankTransactions).set({ status: "posted", jeId, categoryAccountId: categoryId })
+          .where(eq(bankTransactions.id, id));
+        await writeAudit(tx, { entityId, userId, action: "BANK_TXN_POSTED", tableName: "bank_transactions",
+          recordId: id, afterState: { jeId, toSuspense: !txn.categoryAccountId } });
+        return { toSuspense: !txn.categoryAccountId };
+      });
+      if (posted) { result.posted++; if (posted.toSuspense) result.toSuspense++; }
+    } catch (error) {
+      result.failed.push({ id, error: error instanceof Error ? error.message : "Posting failed" });
     }
   }
-
-  await writeAudit(db, {
-    entityId,
-    userId,
-    action: "BANK_TXN_POSTED",
-    tableName: "bank_transactions",
-    afterState: { posted, toSuspense, failed: failed.length },
-  });
-
-  return { posted, toSuspense, failed };
+  return result;
 }
 
 /** Bank accounts available for import (cash & bank COA accounts). */
 export async function listBankAccounts(entityId: string) {
-  return db
-    .select({
-      id: chartOfAccounts.id,
-      number: chartOfAccounts.accountNumber,
-      name: chartOfAccounts.name,
-    })
-    .from(chartOfAccounts)
-    .where(
-      and(
-        eq(chartOfAccounts.entityId, entityId),
-        eq(chartOfAccounts.isActive, true),
-        sql`(${chartOfAccounts.subType} = 'cash_and_bank'
-             OR (${chartOfAccounts.type} = 'asset'
-                 AND ${chartOfAccounts.accountNumber} ~ '^10[0-9][0-9]$'))`
-      )
-    )
-    .orderBy(asc(chartOfAccounts.accountNumber));
+  return listCashBankAccounts(entityId);
 }
 
 export async function listImportBatches(entityId: string) {

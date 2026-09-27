@@ -1,6 +1,6 @@
 import "server-only";
 import { asc, eq } from "drizzle-orm";
-import { db } from "@/db";
+import { db, type Db, type Tx } from "@/db";
 import { plans, subscriptions } from "@/db/schema";
 import { writeAudit } from "@/services/audit";
 
@@ -21,8 +21,8 @@ export async function listPlans(opts?: { activeOnly?: boolean }) {
   return opts?.activeOnly ? rows.filter((p) => p.isActive) : rows;
 }
 
-export async function getPlan(planId: string) {
-  const [plan] = await db.select().from(plans).where(eq(plans.id, planId));
+export async function getPlan(planId: string, executor: Db | Tx = db) {
+  const [plan] = await executor.select().from(plans).where(eq(plans.id, planId));
   return plan ?? null;
 }
 
@@ -46,86 +46,92 @@ function toLimit(v: PlanInput["maxEntities"]): number | null {
 }
 
 export async function createPlan(input: PlanInput, actingUserId: string) {
-  const code = input.code.trim().toLowerCase().replace(/\s+/g, "-");
-  if (!code) throw new PlanError("Plan code is required");
-  if (!input.name.trim()) throw new PlanError("Plan name is required");
-  if (Number(input.monthlyPrice) < 0) throw new PlanError("Price cannot be negative");
+  return db.transaction(async (tx) => {
+    const code = input.code.trim().toLowerCase().replace(/\s+/g, "-");
+    if (!code) throw new PlanError("Plan code is required");
+    if (!input.name.trim()) throw new PlanError("Plan name is required");
+    if (Number(input.monthlyPrice) < 0) throw new PlanError("Price cannot be negative");
 
-  const [plan] = await db
-    .insert(plans)
-    .values({
-      code,
-      name: input.name.trim(),
-      description: input.description || null,
-      monthlyPrice: String(input.monthlyPrice || 0),
-      currency: (input.currency || "USD").toUpperCase(),
-      maxEntities: toLimit(input.maxEntities),
-      maxUsers: toLimit(input.maxUsers),
-      sortOrder: Number(input.sortOrder) || 100,
-    })
-    .returning();
+    const [plan] = await tx
+      .insert(plans)
+      .values({
+        code,
+        name: input.name.trim(),
+        description: input.description || null,
+        monthlyPrice: String(input.monthlyPrice || 0),
+        currency: (input.currency || "USD").toUpperCase(),
+        maxEntities: toLimit(input.maxEntities),
+        maxUsers: toLimit(input.maxUsers),
+        sortOrder: Number(input.sortOrder) || 100,
+      })
+      .returning();
 
-  await writeAudit(db, {
-    userId: actingUserId,
-    action: "PLAN_CREATED",
-    tableName: "plans",
-    recordId: plan.id,
-    afterState: { code: plan.code, monthlyPrice: plan.monthlyPrice },
+    await writeAudit(tx, {
+      userId: actingUserId,
+      action: "PLAN_CREATED",
+      tableName: "plans",
+      recordId: plan.id,
+      afterState: { code: plan.code, monthlyPrice: plan.monthlyPrice },
+    });
+    return plan;
   });
-  return plan;
 }
 
 export async function updatePlan(planId: string, input: PlanInput, actingUserId: string) {
-  const existing = await getPlan(planId);
-  if (!existing) throw new PlanError("Plan not found");
-  if (!input.name.trim()) throw new PlanError("Plan name is required");
+  return db.transaction(async (tx) => {
+    const existing = await getPlan(planId, tx);
+    if (!existing) throw new PlanError("Plan not found");
+    if (!input.name.trim()) throw new PlanError("Plan name is required");
 
-  await db
-    .update(plans)
-    .set({
-      name: input.name.trim(),
-      description: input.description || null,
-      monthlyPrice: String(input.monthlyPrice || 0),
-      currency: (input.currency || "USD").toUpperCase(),
-      maxEntities: toLimit(input.maxEntities),
-      maxUsers: toLimit(input.maxUsers),
-      sortOrder: Number(input.sortOrder) || 100,
-    })
-    .where(eq(plans.id, planId));
+    await tx
+      .update(plans)
+      .set({
+        name: input.name.trim(),
+        description: input.description || null,
+        monthlyPrice: String(input.monthlyPrice || 0),
+        currency: (input.currency || "USD").toUpperCase(),
+        maxEntities: toLimit(input.maxEntities),
+        maxUsers: toLimit(input.maxUsers),
+        sortOrder: Number(input.sortOrder) || 100,
+      })
+      .where(eq(plans.id, planId));
 
-  await writeAudit(db, {
-    userId: actingUserId,
-    action: "PLAN_UPDATED",
-    tableName: "plans",
-    recordId: planId,
-    beforeState: { name: existing.name, monthlyPrice: existing.monthlyPrice },
-    afterState: { name: input.name, monthlyPrice: String(input.monthlyPrice) },
+    await writeAudit(tx, {
+      userId: actingUserId,
+      action: "PLAN_UPDATED",
+      tableName: "plans",
+      recordId: planId,
+      beforeState: { name: existing.name, monthlyPrice: existing.monthlyPrice },
+      afterState: { name: input.name, monthlyPrice: String(input.monthlyPrice) },
+    });
   });
 }
 
 export async function setPlanActive(planId: string, isActive: boolean, actingUserId: string) {
-  const existing = await getPlan(planId);
-  if (!existing) throw new PlanError("Plan not found");
+  return db.transaction(async (tx) => {
+    const existing = await getPlan(planId, tx);
+    if (!existing) throw new PlanError("Plan not found");
 
-  // Retiring a plan must not orphan the firms already on it.
-  if (!isActive) {
-    const inUse = await db
-      .select({ id: subscriptions.id })
-      .from(subscriptions)
-      .where(eq(subscriptions.planId, planId));
-    const live = inUse.length;
-    if (live > 0) {
-      throw new PlanError(
-        `${live} subscription${live === 1 ? " is" : "s are"} still on this plan — move them first.`
-      );
+    // Retiring a plan must not orphan the firms already on it.
+    if (!isActive) {
+      const inUse = await tx
+        .select({ id: subscriptions.id })
+        .from(subscriptions)
+        .where(eq(subscriptions.planId, planId));
+      const live = inUse.length;
+      if (live > 0) {
+        throw new PlanError(
+          `${live} subscription${live === 1 ? " is" : "s are"} still on this plan — move them first.`
+        );
+      }
     }
-  }
 
-  await db.update(plans).set({ isActive }).where(eq(plans.id, planId));
-  await writeAudit(db, {
-    userId: actingUserId,
-    action: isActive ? "PLAN_ACTIVATED" : "PLAN_RETIRED",
-    tableName: "plans",
-    recordId: planId,
+    await tx.update(plans).set({ isActive }).where(eq(plans.id, planId));
+    await writeAudit(tx, {
+      userId: actingUserId,
+      action: isActive ? "PLAN_ACTIVATED" : "PLAN_RETIRED",
+      tableName: "plans",
+      recordId: planId,
+    });
   });
 }

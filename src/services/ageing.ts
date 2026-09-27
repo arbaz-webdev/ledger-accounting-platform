@@ -58,6 +58,7 @@ async function buildAgeing(
   kind: "ar" | "ap"
 ): Promise<AgeingReport> {
   const isAr = kind === "ar";
+  const controlAccountId = await resolveMapping(entityId, isAr ? "ar_control" : "ap_control");
 
   // Open documents with outstanding balance as at `asOf`
   // Open balances are converted to BASE currency at the DOCUMENT's rate —
@@ -67,26 +68,36 @@ async function buildAgeing(
     ? await db.execute(sql`
         SELECT i.id, i.invoice_number AS number, i.issue_date, i.due_date, i.total,
                i.currency, i.fx_rate,
+               ROUND(i.total*i.fx_rate,2) - COALESCE((SELECT SUM(l.credit_base-l.debit_base)
+                 FROM settlements s JOIN journal_entry_lines l ON l.je_id=s.je_id
+                 WHERE s.invoice_id=i.id AND s.date<=${asOf} AND l.account_id=${controlAccountId}),0) AS outstanding_base,
                c.name AS contact_name,
                COALESCE((SELECT SUM(s.amount) FROM settlements s
                          WHERE s.invoice_id = i.id AND s.date <= ${asOf}), 0) AS settled
         FROM invoices i
         JOIN contacts c ON c.id = i.customer_id
+        JOIN journal_entries original ON original.id=i.je_id AND original.status IN ('posted','voided')
+        LEFT JOIN journal_entries reversal ON reversal.id=original.voided_by_je_id
         WHERE i.entity_id = ${entityId}
-          AND i.status IN ('posted', 'paid')
+          AND original.date <= ${asOf} AND (reversal.id IS NULL OR reversal.date > ${asOf})
           AND i.issue_date <= ${asOf}
         ORDER BY i.due_date
       `)
     : await db.execute(sql`
         SELECT b.id, b.bill_number AS number, b.issue_date, b.due_date, b.total,
                b.currency, b.fx_rate,
+               ROUND(b.total*b.fx_rate,2) - COALESCE((SELECT SUM(l.debit_base-l.credit_base)
+                 FROM settlements s JOIN journal_entry_lines l ON l.je_id=s.je_id
+                 WHERE s.bill_id=b.id AND s.date<=${asOf} AND l.account_id=${controlAccountId}),0) AS outstanding_base,
                c.name AS contact_name,
                COALESCE((SELECT SUM(s.amount) FROM settlements s
                          WHERE s.bill_id = b.id AND s.date <= ${asOf}), 0) AS settled
         FROM bills b
         JOIN contacts c ON c.id = b.supplier_id
+        JOIN journal_entries original ON original.id=b.je_id AND original.status IN ('posted','voided')
+        LEFT JOIN journal_entries reversal ON reversal.id=original.voided_by_je_id
         WHERE b.entity_id = ${entityId}
-          AND b.status IN ('posted', 'paid')
+          AND original.date <= ${asOf} AND (reversal.id IS NULL OR reversal.date > ${asOf})
           AND b.issue_date <= ${asOf}
         ORDER BY b.due_date
       `);
@@ -106,15 +117,12 @@ async function buildAgeing(
     fx_rate: string;
     contact_name: string;
     settled: string;
+    outstanding_base: string;
   }[]) {
     const outstandingDoc = parseCents(r.total) - parseCents(r.settled);
     if (outstandingDoc <= 0n) continue; // fully settled — not an open item
     // Convert to base at the document's rate (rate is 1 for base-currency docs)
-    const rate = Number(r.fx_rate);
-    const outstanding =
-      rate === 1
-        ? outstandingDoc
-        : BigInt(Math.round(Number(outstandingDoc) * rate));
+    const outstanding = parseCents(r.outstanding_base);
 
     const dueDate = String(r.due_date).slice(0, 10);
     const daysOverdue = Math.floor((asOfMs - Date.parse(`${dueDate}T00:00:00Z`)) / 86_400_000);
@@ -137,15 +145,16 @@ async function buildAgeing(
   }
 
   // GL control account balance as at the same date
-  const controlAccountId = await resolveMapping(entityId, isAr ? "ar_control" : "ap_control");
   const controlRows = await db.execute(sql`
     SELECT a.account_number, a.name,
-           COALESCE(SUM(l.debit_base - l.credit_base), 0) AS net
+           COALESCE(SUM(CASE WHEN je.id IS NOT NULL
+             THEN l.debit_base - l.credit_base ELSE 0 END), 0) AS net
     FROM chart_of_accounts a
     LEFT JOIN journal_entry_lines l ON l.account_id = a.id
     LEFT JOIN journal_entries je ON je.id = l.je_id
+      AND je.entity_id = ${entityId}
       AND je.status IN ('posted', 'voided') AND je.date <= ${asOf}
-    WHERE a.id = ${controlAccountId}
+    WHERE a.id = ${controlAccountId} AND a.entity_id = ${entityId}
     GROUP BY a.account_number, a.name
   `);
   const control = controlRows.rows[0] as

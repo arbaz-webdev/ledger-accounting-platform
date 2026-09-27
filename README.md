@@ -64,9 +64,11 @@ production — the app only needs a `DATABASE_URL` pointing at any PostgreSQL 15
 3. **Deploy on [Vercel](https://vercel.com)**: import this repo, add the `DATABASE_URL`
    environment variable, deploy. Vercel builds `npm run build` and serves it.
 
-Demo credentials work on the live URL exactly as locally. This is a **demo deployment** —
-it has no email verification, MFA, rate limiting, or password reset, so don't use it for
-real financial data as-is.
+Demo credentials remain enabled until explicitly retired. Authentication now includes
+durable throttling, optional authenticator MFA, password changes and email recovery.
+See [SECURITY-DEPLOYMENT.md](SECURITY-DEPLOYMENT.md) for migration order, required
+hosting secrets, email configuration and demo-account retirement. Do not put real
+financial data into an unconfigured demo deployment.
 
 ## Architecture invariants
 

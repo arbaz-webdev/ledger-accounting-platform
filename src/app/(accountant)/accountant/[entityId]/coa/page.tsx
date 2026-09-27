@@ -2,6 +2,8 @@ import { listAccounts } from "@/services/coa";
 import { NewAccountForm } from "./new-account-form";
 import { toggleAccountActiveAction } from "./actions";
 import { PageHeader } from "@/components/ui";
+import { EditAccountForm } from "./edit-account-form";
+import { requireAccountant } from "@/lib/auth";
 
 const TYPE_LABELS: Record<string, string> = {
   asset: "Asset",
@@ -18,6 +20,8 @@ const TYPE_LABELS: Record<string, string> = {
 export default async function CoaPage({ params }: { params: Promise<{ entityId: string }> }) {
   const { entityId } = await params;
   const accounts = await listAccounts(entityId);
+  const user = await requireAccountant();
+  const canReview = ["platform_admin", "firm_owner", "firm_admin"].includes(user.role);
   const activeCount = accounts.filter((a) => a.isActive).length;
 
   return (
@@ -63,6 +67,7 @@ export default async function CoaPage({ params }: { params: Promise<{ entityId: 
                   )}
                 </td>
                 <td className="text-right">
+                  <EditAccountForm entityId={entityId} account={a} canReview={canReview} />
                   {!a.isSystem && (
                     <form action={toggleAccountActiveAction} className="inline">
                       <input type="hidden" name="entityId" value={entityId} />

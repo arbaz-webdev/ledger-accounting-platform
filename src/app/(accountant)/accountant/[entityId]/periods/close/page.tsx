@@ -29,12 +29,13 @@ export default async function CloseReviewPage({
 
   const checks = await preCloseChecks(entityId, year, month);
   const failing = checks.filter((c) => !c.ok);
+  const suspenseBlocked = failing.some(c => c.key === "suspense");
 
   return (
     <div className="fade-up">
       <PageHeader
         title={`Close ${MONTHS[month - 1]} ${year}`}
-        sub="Pre-close review — warnings are advisory; locking is your call."
+        sub="Suspense must be clear before locking. Other reconciliation warnings remain advisory."
       >
         <a href={`/accountant/${entityId}/periods?year=${year}`} className="btn btn-secondary">
           Back to periods
@@ -89,9 +90,9 @@ export default async function CloseReviewPage({
           <input type="hidden" name="entityId" value={entityId} />
           <input type="hidden" name="year" value={year} />
           <input type="hidden" name="month" value={month} />
-          <button className="btn btn-brand">
+          <button className="btn btn-brand" disabled={suspenseBlocked}>
             <IconLock className="h-4 w-4" />
-            {failing.length === 0
+            {suspenseBlocked ? "Resolve suspense before locking" : failing.length === 0
               ? `Lock ${MONTHS[month - 1]} ${year}`
               : `Lock anyway (${failing.length} warning${failing.length === 1 ? "" : "s"})`}
           </button>

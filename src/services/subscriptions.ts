@@ -1,7 +1,7 @@
 import "server-only";
 import Decimal from "decimal.js";
 import { and, eq, ne, sql } from "drizzle-orm";
-import { db } from "@/db";
+import { db, type Db, type Tx } from "@/db";
 import { firms, plans, subscriptions, users, entities } from "@/db/schema";
 import { writeAudit } from "@/services/audit";
 
@@ -60,8 +60,8 @@ export type FirmSubscription = {
 };
 
 /** The firm's live (non-cancelled) subscription, or null. */
-export async function getFirmSubscription(firmId: string): Promise<FirmSubscription | null> {
-  const [row] = await db
+export async function getFirmSubscription(firmId: string, executor: Db | Tx = db): Promise<FirmSubscription | null> {
+  const [row] = await executor
     .select({
       id: subscriptions.id,
       firmId: subscriptions.firmId,
@@ -158,6 +158,9 @@ export async function firmAccessState(firmId: string): Promise<FirmAccess> {
   // Soft states — allowed, but the user should know
   let warning: string | undefined;
   const today = new Date().toISOString().slice(0, 10);
+  if (sub.status === "trial" && (!sub.trialEndsOn || sub.trialEndsOn < today)) {
+    return { allowed: false, reason: "The trial period has ended. Contact the platform administrator.", firmName: firm.name, subscription: sub };
+  }
   if (sub.status === "past_due") {
     warning = "Payment is overdue. Access continues for now, but please settle the invoice.";
   } else if (sub.status === "trial") {
@@ -184,14 +187,14 @@ export type FirmUsage = {
   usersAtLimit: boolean;
 };
 
-export async function firmUsage(firmId: string): Promise<FirmUsage> {
-  const sub = await getFirmSubscription(firmId);
+export async function firmUsage(firmId: string, executor: Db | Tx = db): Promise<FirmUsage> {
+  const sub = await getFirmSubscription(firmId, executor);
 
-  const [entityCount] = await db
+  const [entityCount] = await executor
     .select({ n: sql<number>`count(*)::int` })
     .from(entities)
     .where(and(eq(entities.firmId, firmId), eq(entities.isActive, true)));
-  const [userCount] = await db
+  const [userCount] = await executor
     .select({ n: sql<number>`count(*)::int` })
     .from(users)
     .where(and(eq(users.firmId, firmId), eq(users.isActive, true)));
@@ -209,8 +212,8 @@ export async function firmUsage(firmId: string): Promise<FirmUsage> {
 }
 
 /** Throws if adding another client business would exceed the plan. */
-export async function assertCanAddEntity(firmId: string): Promise<void> {
-  const usage = await firmUsage(firmId);
+export async function assertCanAddEntity(firmId: string, executor: Db | Tx = db): Promise<void> {
+  const usage = await firmUsage(firmId, executor);
   if (usage.entitiesAtLimit) {
     throw new SubscriptionError(
       `Your plan allows ${usage.maxEntities} client${usage.maxEntities === 1 ? "" : "s"} and you have ${usage.entities}. Upgrade the plan to add more.`
@@ -219,8 +222,8 @@ export async function assertCanAddEntity(firmId: string): Promise<void> {
 }
 
 /** Throws if adding another user would exceed the plan. */
-export async function assertCanAddUser(firmId: string): Promise<void> {
-  const usage = await firmUsage(firmId);
+export async function assertCanAddUser(firmId: string, executor: Db | Tx = db): Promise<void> {
+  const usage = await firmUsage(firmId, executor);
   if (usage.usersAtLimit) {
     throw new SubscriptionError(
       `Your plan allows ${usage.maxUsers} user${usage.maxUsers === 1 ? "" : "s"} and you have ${usage.users}. Upgrade the plan to add more.`
@@ -250,50 +253,53 @@ export async function setFirmSubscription(
   input: SetSubscriptionInput,
   actingUserId: string
 ): Promise<void> {
-  const [plan] = await db.select().from(plans).where(eq(plans.id, input.planId));
-  if (!plan) throw new SubscriptionError("Plan not found");
+  return db.transaction(async (tx) => {
+    const [plan] = await tx.select().from(plans).where(eq(plans.id, input.planId));
+    if (!plan) throw new SubscriptionError("Plan not found");
 
-  const existing = await getFirmSubscription(input.firmId);
+    await tx.execute(sql`SELECT id FROM firms WHERE id = ${input.firmId} FOR UPDATE`);
+    const existing = await getFirmSubscription(input.firmId, tx);
 
-  if (!existing) {
-    await db.insert(subscriptions).values({
-      firmId: input.firmId,
-      planId: input.planId,
-      status: input.status,
-      startedOn: new Date().toISOString().slice(0, 10),
-      trialEndsOn: input.trialEndsOn || null,
-      currentPeriodEnd: input.currentPeriodEnd || null,
-      notes: input.notes || null,
-      createdBy: actingUserId,
-    });
-  } else if (input.status === "cancelled") {
-    await db
-      .update(subscriptions)
-      .set({ status: "cancelled", notes: input.notes ?? existing.notes, updatedAt: new Date() })
-      .where(eq(subscriptions.id, existing.id));
-  } else {
-    await db
-      .update(subscriptions)
-      .set({
+    if (!existing) {
+      await tx.insert(subscriptions).values({
+        firmId: input.firmId,
         planId: input.planId,
         status: input.status,
+        startedOn: new Date().toISOString().slice(0, 10),
         trialEndsOn: input.trialEndsOn || null,
         currentPeriodEnd: input.currentPeriodEnd || null,
-        notes: input.notes ?? existing.notes,
-        updatedAt: new Date(),
-      })
-      .where(eq(subscriptions.id, existing.id));
-  }
+        notes: input.notes || null,
+        createdBy: actingUserId,
+      });
+    } else if (input.status === "cancelled") {
+      await tx
+        .update(subscriptions)
+        .set({ status: "cancelled", notes: input.notes ?? existing.notes, updatedAt: new Date() })
+        .where(eq(subscriptions.id, existing.id));
+    } else {
+      await tx
+        .update(subscriptions)
+        .set({
+          planId: input.planId,
+          status: input.status,
+          trialEndsOn: input.trialEndsOn || null,
+          currentPeriodEnd: input.currentPeriodEnd || null,
+          notes: input.notes ?? existing.notes,
+          updatedAt: new Date(),
+        })
+        .where(eq(subscriptions.id, existing.id));
+    }
 
-  await writeAudit(db, {
-    userId: actingUserId,
-    action: "SUBSCRIPTION_UPDATED",
-    tableName: "subscriptions",
-    recordId: input.firmId,
-    beforeState: existing
-      ? { plan: existing.plan.code, status: existing.status }
-      : { plan: null, status: null },
-    afterState: { plan: plan.code, status: input.status },
+    await writeAudit(tx, {
+      userId: actingUserId,
+      action: "SUBSCRIPTION_UPDATED",
+      tableName: "subscriptions",
+      recordId: input.firmId,
+      beforeState: existing
+        ? { plan: existing.plan.code, status: existing.status }
+        : { plan: null, status: null },
+      afterState: { plan: plan.code, status: input.status },
+  });
   });
 }
 

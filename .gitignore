@@ -8,3 +8,5 @@ build/
 next-env.d.ts
 npm-debug.log*
 .DS_Store
+.agents/
+skills-lock.json

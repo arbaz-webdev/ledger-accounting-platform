@@ -43,8 +43,8 @@ export function NewMemberForm({ atLimit }: { atLimit: boolean }) {
             name="password"
             type="password"
             required
-            minLength={8}
-            placeholder="At least 8 characters"
+            minLength={12}
+            placeholder="At least 12 characters"
             className="input"
           />
         </div>

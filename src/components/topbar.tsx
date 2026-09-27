@@ -24,6 +24,7 @@ export function Topbar({ user, portal }: { user: SessionUser; portal?: boolean }
           </span>
         </a>
         <div className="flex items-center gap-3">
+          <a href="/security" className="btn btn-ghost btn-sm">Security</a>
           <div className="hidden items-center gap-2.5 sm:flex">
             <span className="avatar">{initials(user.fullName)}</span>
             <div className="leading-tight">

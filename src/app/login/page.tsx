@@ -105,6 +105,11 @@ export default function LoginPage() {
               <button type="submit" disabled={pending} className="btn btn-primary w-full">
                 {pending ? "Signing in…" : "Sign in"}
               </button>
+              <div>
+                <label className="field-label" htmlFor="code">Authenticator code (if enabled)</label>
+                <input id="code" name="code" className="input" inputMode="numeric" autoComplete="one-time-code" maxLength={6} />
+              </div>
+              <a href="/forgot-password" className="btn btn-ghost">Forgot password?</a>
             </form>
           </div>
           <p className="mt-6 text-center text-xs text-[var(--ink-400)]">

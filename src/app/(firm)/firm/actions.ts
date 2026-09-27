@@ -10,7 +10,7 @@ import {
   updateFirmSettings,
   FirmError,
 } from "@/services/firms";
-import { assertCanAddUser, SubscriptionError } from "@/services/subscriptions";
+import { SubscriptionError } from "@/services/subscriptions";
 import {
   createFirmUser,
   setUserActive,
@@ -91,7 +91,6 @@ export async function createTeamMemberAction(
   if (role === "platform_admin") return { error: "That role cannot be assigned here" };
 
   try {
-    await assertCanAddUser(user.firmId);
     await createFirmUser(
       {
         firmId: user.firmId,
@@ -115,7 +114,6 @@ export async function setTeamMemberActiveAction(formData: FormData): Promise<voi
   const makeActive = String(formData.get("makeActive")) === "true";
 
   try {
-    if (makeActive) await assertCanAddUser(user.firmId);
     await setUserActive(targetUserId, user.firmId, makeActive, user.id);
   } catch (err) {
     redirect(`/firm/team?error=${encodeURIComponent(readable(err, "Failed to update user"))}`);

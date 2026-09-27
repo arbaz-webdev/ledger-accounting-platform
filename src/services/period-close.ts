@@ -7,10 +7,9 @@ import { getArAgeing, getApAgeing } from "@/services/ageing";
 import { inventoryGlTieOut } from "@/services/inventory";
 
 /**
- * Month-end pre-close checks (advisory, per user decision): locking a period
- * surfaces everything an accountant would want cleared first, but never blocks
- * — the lock itself stays their call. Every check is a plain read; nothing
- * here mutates state.
+ * Month-end review checks. Suspense is blocking under the approved policy;
+ * other checks are advisory. The write service rechecks suspense atomically.
+ * Every check here is read-only.
  */
 
 export type CloseCheck = {
@@ -114,6 +113,7 @@ export async function preCloseChecks(
 
   // 5. Suspense account clear as at period end
   let suspenseBalance = new Decimal(0);
+  let suspenseError = "";
   try {
     const suspenseId = await resolveMapping(entityId, "suspense");
     const res = await db.execute(sql`
@@ -124,14 +124,14 @@ export async function preCloseChecks(
         AND je.status IN ('posted', 'voided') AND je.date <= ${to}
     `);
     suspenseBalance = new Decimal(String((res.rows[0] as { bal: string }).bal));
-  } catch {
-    // no suspense mapping — treat as clear
+  } catch (error) {
+    suspenseError = error instanceof Error ? error.message : "Suspense check failed";
   }
   checks.push({
     key: "suspense",
     label: "Suspense account is clear at period end",
-    ok: suspenseBalance.isZero(),
-    detail: suspenseBalance.isZero() ? "" : `Suspense balance ${suspenseBalance.toFixed(2)} — reclassify before closing`,
+    ok: !suspenseError && suspenseBalance.isZero(),
+    detail: suspenseError || (suspenseBalance.isZero() ? "" : `Suspense balance ${suspenseBalance.toFixed(2)} — reclassify before closing`),
     fixPath: "/reports/ledger",
   });
 
@@ -154,12 +154,11 @@ export async function preCloseChecks(
     fixPath: "/reports/ap-ageing",
   });
 
-  // 7. Inventory subledger ties to the GL (current state — lots have no as-at
-  //    history, so this is a present-day check)
-  const inv = await inventoryGlTieOut(entityId);
+  // 7. Historical inventory valuation from dated, append-only movements.
+  const inv = await inventoryGlTieOut(entityId, to);
   checks.push({
     key: "inventory_tieout",
-    label: "Inventory subledger ties to the GL (current)",
+    label: "Inventory subledger ties to the GL at period end",
     ok: inv.inBalance,
     detail: inv.inBalance ? "" : `Difference ${inv.difference} between stock value and ${inv.account}`,
     fixPath: "/inventory",

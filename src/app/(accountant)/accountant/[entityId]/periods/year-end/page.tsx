@@ -98,6 +98,9 @@ export default async function YearEndPage({
             <input type="hidden" name="entityId" value={entityId} />
             <input type="hidden" name="closeId" value={status.close.id} />
             <input type="hidden" name="startYear" value={startYear} />
+            <label className="field-label" htmlFor="reopen-reason">Reopening reason</label>
+            <input id="reopen-reason" name="reason" className="input" required minLength={5} maxLength={500} />
+            <label className="text-xs"><input type="checkbox" name="confirmed" required /> Confirm reversal and reopening</label>
             <button className="btn btn-danger">Reopen {status.close.label}</button>
             <span className="kbd-hint">
               Voids the closing entry (reversal dated {fmtDate(status.range.end)}) and unlocks the
@@ -145,10 +148,11 @@ export default async function YearEndPage({
           <form action={closeYearAction} className="flex items-center gap-3">
             <input type="hidden" name="entityId" value={entityId} />
             <input type="hidden" name="startYear" value={startYear} />
-            <button className="btn btn-brand" disabled={status.finalPeriodLocked}>
+            <button className="btn btn-brand" disabled={status.finalPeriodLocked || !status.hasActivity}>
               Close {status.range.label} ({fmtMoney(status.sweepTotal)} to retained earnings)
             </button>
           </form>
+          {!status.hasActivity && <p className="mt-2 text-sm" role="status">This fiscal year has no posted activity and cannot be closed.</p>}
         </div>
       )}
 

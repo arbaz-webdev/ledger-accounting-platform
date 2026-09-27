@@ -38,45 +38,47 @@ export type EmployeeInput = {
 };
 
 export async function createEmployee(input: EmployeeInput, userId: string) {
-  if (!input.fullName.trim()) throw new EmployeeError("Employee name is required");
-  if (Number(input.basicSalary) < 0) throw new EmployeeError("Basic salary cannot be negative");
+  return db.transaction(async (tx) => {
+    if (!input.fullName.trim()) throw new EmployeeError("Employee name is required");
+    if (Number(input.basicSalary) < 0) throw new EmployeeError("Basic salary cannot be negative");
 
-  const numRows = await db.execute(
-    sql`SELECT next_document_number(${input.entityId}::uuid, 'employee') AS n`
-  );
-  const seq = Number((numRows.rows[0] as { n: string | number }).n);
-  const employeeNumber = `EMP-${String(seq).padStart(4, "0")}`;
+    const numRows = await tx.execute(
+      sql`SELECT next_document_number(${input.entityId}::uuid, 'employee') AS n`
+    );
+    const seq = Number((numRows.rows[0] as { n: string | number }).n);
+    const employeeNumber = `EMP-${String(seq).padStart(4, "0")}`;
 
-  const [employee] = await db
-    .insert(employees)
-    .values({
+    const [employee] = await tx
+      .insert(employees)
+      .values({
+        entityId: input.entityId,
+        employeeNumber,
+        fullName: input.fullName.trim(),
+        email: input.email || undefined,
+        phone: input.phone || undefined,
+        hireDate: input.hireDate,
+        payFrequency: input.payFrequency,
+        basicSalary: String(input.basicSalary || 0),
+        allowances: String(input.allowances || 0),
+        incomeTaxRate: String(input.incomeTaxRate || 0),
+        eobiEmployeeAmount: String(input.eobiEmployeeAmount || 0),
+        eobiEmployerAmount: String(input.eobiEmployerAmount || 0),
+        payrollTaxEmployerRate: String(input.payrollTaxEmployerRate || 0),
+        createdBy: userId,
+      })
+      .returning();
+
+    await writeAudit(tx, {
       entityId: input.entityId,
-      employeeNumber,
-      fullName: input.fullName.trim(),
-      email: input.email || undefined,
-      phone: input.phone || undefined,
-      hireDate: input.hireDate,
-      payFrequency: input.payFrequency,
-      basicSalary: String(input.basicSalary || 0),
-      allowances: String(input.allowances || 0),
-      incomeTaxRate: String(input.incomeTaxRate || 0),
-      eobiEmployeeAmount: String(input.eobiEmployeeAmount || 0),
-      eobiEmployerAmount: String(input.eobiEmployerAmount || 0),
-      payrollTaxEmployerRate: String(input.payrollTaxEmployerRate || 0),
-      createdBy: userId,
-    })
-    .returning();
+      userId,
+      action: "EMPLOYEE_CREATED",
+      tableName: "employees",
+      recordId: employee.id,
+      afterState: { employeeNumber, fullName: employee.fullName },
+    });
 
-  await writeAudit(db, {
-    entityId: input.entityId,
-    userId,
-    action: "EMPLOYEE_CREATED",
-    tableName: "employees",
-    recordId: employee.id,
-    afterState: { employeeNumber, fullName: employee.fullName },
+    return employee;
   });
-
-  return employee;
 }
 
 export async function updateEmployee(
@@ -85,39 +87,41 @@ export async function updateEmployee(
   input: Omit<EmployeeInput, "entityId">,
   userId: string
 ) {
-  const [existing] = await db
-    .select()
-    .from(employees)
-    .where(and(eq(employees.id, employeeId), eq(employees.entityId, entityId)));
-  if (!existing) throw new EmployeeError("Employee not found");
-  if (!input.fullName.trim()) throw new EmployeeError("Employee name is required");
-  if (Number(input.basicSalary) < 0) throw new EmployeeError("Basic salary cannot be negative");
+  return db.transaction(async (tx) => {
+    const [existing] = await tx
+      .select()
+      .from(employees)
+      .where(and(eq(employees.id, employeeId), eq(employees.entityId, entityId)));
+    if (!existing) throw new EmployeeError("Employee not found");
+    if (!input.fullName.trim()) throw new EmployeeError("Employee name is required");
+    if (Number(input.basicSalary) < 0) throw new EmployeeError("Basic salary cannot be negative");
 
-  await db
-    .update(employees)
-    .set({
-      fullName: input.fullName.trim(),
-      email: input.email || undefined,
-      phone: input.phone || undefined,
-      hireDate: input.hireDate,
-      payFrequency: input.payFrequency,
-      basicSalary: String(input.basicSalary || 0),
-      allowances: String(input.allowances || 0),
-      incomeTaxRate: String(input.incomeTaxRate || 0),
-      eobiEmployeeAmount: String(input.eobiEmployeeAmount || 0),
-      eobiEmployerAmount: String(input.eobiEmployerAmount || 0),
-      payrollTaxEmployerRate: String(input.payrollTaxEmployerRate || 0),
-    })
-    .where(eq(employees.id, employeeId));
+    await tx
+      .update(employees)
+      .set({
+        fullName: input.fullName.trim(),
+        email: input.email || undefined,
+        phone: input.phone || undefined,
+        hireDate: input.hireDate,
+        payFrequency: input.payFrequency,
+        basicSalary: String(input.basicSalary || 0),
+        allowances: String(input.allowances || 0),
+        incomeTaxRate: String(input.incomeTaxRate || 0),
+        eobiEmployeeAmount: String(input.eobiEmployeeAmount || 0),
+        eobiEmployerAmount: String(input.eobiEmployerAmount || 0),
+        payrollTaxEmployerRate: String(input.payrollTaxEmployerRate || 0),
+      })
+      .where(eq(employees.id, employeeId));
 
-  await writeAudit(db, {
-    entityId,
-    userId,
-    action: "EMPLOYEE_UPDATED",
-    tableName: "employees",
-    recordId: employeeId,
-    beforeState: { fullName: existing.fullName, basicSalary: existing.basicSalary },
-    afterState: { fullName: input.fullName, basicSalary: String(input.basicSalary) },
+    await writeAudit(tx, {
+      entityId,
+      userId,
+      action: "EMPLOYEE_UPDATED",
+      tableName: "employees",
+      recordId: employeeId,
+      beforeState: { fullName: existing.fullName, basicSalary: existing.basicSalary },
+      afterState: { fullName: input.fullName, basicSalary: String(input.basicSalary) },
+    });
   });
 }
 
@@ -127,28 +131,30 @@ export async function setEmployeeActive(
   isActive: boolean,
   userId: string
 ) {
-  const [existing] = await db
-    .select()
-    .from(employees)
-    .where(and(eq(employees.id, employeeId), eq(employees.entityId, entityId)));
-  if (!existing) throw new EmployeeError("Employee not found");
+  return db.transaction(async (tx) => {
+    const [existing] = await tx
+      .select()
+      .from(employees)
+      .where(and(eq(employees.id, employeeId), eq(employees.entityId, entityId)));
+    if (!existing) throw new EmployeeError("Employee not found");
 
-  await db
-    .update(employees)
-    .set({
-      isActive,
-      terminationDate: isActive ? null : new Date().toISOString().slice(0, 10),
-    })
-    .where(eq(employees.id, employeeId));
+    await tx
+      .update(employees)
+      .set({
+        isActive,
+        terminationDate: isActive ? null : new Date().toISOString().slice(0, 10),
+      })
+      .where(eq(employees.id, employeeId));
 
-  await writeAudit(db, {
-    entityId,
-    userId,
-    action: isActive ? "EMPLOYEE_ACTIVATED" : "EMPLOYEE_DEACTIVATED",
-    tableName: "employees",
-    recordId: employeeId,
-    beforeState: { isActive: existing.isActive },
-    afterState: { isActive },
+    await writeAudit(tx, {
+      entityId,
+      userId,
+      action: isActive ? "EMPLOYEE_ACTIVATED" : "EMPLOYEE_DEACTIVATED",
+      tableName: "employees",
+      recordId: employeeId,
+      beforeState: { isActive: existing.isActive },
+      afterState: { isActive },
+    });
   });
 }
 

@@ -11,6 +11,7 @@ import { toggleUserActiveAction } from "./actions";
 const ROLE_LABELS: Record<string, string> = {
   platform_admin: "Platform admin",
   firm_admin: "Firm admin",
+  firm_owner: "Firm owner",
   accountant_staff: "Accountant staff",
   business_admin: "Business admin",
   business_staff: "Business staff",
@@ -23,7 +24,7 @@ export default async function UsersPage({
   searchParams: Promise<{ error?: string }>;
 }) {
   const user = await requireAccountant();
-  if (user.role !== "firm_admin" && user.role !== "platform_admin") redirect("/accountant");
+  if (user.role !== "firm_admin" && user.role !== "firm_owner" && user.role !== "platform_admin") redirect("/accountant");
   const { error } = await searchParams;
 
   const [firmUsers, firmEntities] = await Promise.all([
@@ -88,7 +89,7 @@ export default async function UsersPage({
                   <td className="acct">{u.email}</td>
                   <td className="text-[var(--ink-500)]">{ROLE_LABELS[u.role] ?? u.role}</td>
                   <td className="td-num">
-                    {u.role === "firm_admin" || u.role === "platform_admin"
+                    {u.role === "firm_admin" || u.role === "firm_owner" || u.role === "platform_admin"
                       ? `all (${firmEntities.length})`
                       : u.entityIds.length}
                   </td>

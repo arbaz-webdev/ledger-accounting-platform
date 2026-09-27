@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { requireAccountant, assertEntityAccess } from "@/lib/auth";
-import { requireModule } from "@/services/permissions";
+import { requireModuleEdit as requireModule, requireModuleApprove } from "@/services/permissions";
 import {
   buildPreview,
   importTransactions,
@@ -217,7 +217,7 @@ export async function approveReconciliationAction(formData: FormData): Promise<v
   const user = await requireAccountant();
   const entityId = String(formData.get("entityId"));
   await assertEntityAccess(user, entityId);
-  await requireModule(user, entityId, "banking");
+  await requireModuleApprove(user, entityId, "banking");
 
   const bankAccountId = String(formData.get("bankAccountId"));
   const statementDate = String(formData.get("statementDate"));

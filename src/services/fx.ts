@@ -111,56 +111,60 @@ export async function setFxRate(
   input: { currency: string; asOfDate: string; rate: string | number },
   userId: string
 ) {
-  const currency = input.currency.trim().toUpperCase();
-  if (!/^[A-Z]{3}$/.test(currency)) throw new FxError("Currency must be a 3-letter code");
+  return db.transaction(async (tx) => {
+    const currency = input.currency.trim().toUpperCase();
+    if (!/^[A-Z]{3}$/.test(currency)) throw new FxError("Currency must be a 3-letter code");
 
-  const base = await getBaseCurrency(entityId);
-  if (currency === base) {
-    throw new FxError(`${base} is the base currency — its rate is always 1`);
-  }
+    const base = await getBaseCurrency(entityId);
+    if (currency === base) {
+      throw new FxError(`${base} is the base currency — its rate is always 1`);
+    }
 
-  const rate = new Decimal(input.rate || 0);
-  if (rate.lessThanOrEqualTo(0)) throw new FxError("Rate must be greater than zero");
+    const rate = new Decimal(input.rate || 0);
+    if (rate.lessThanOrEqualTo(0)) throw new FxError("Rate must be greater than zero");
 
-  await db
-    .insert(fxRates)
-    .values({
+    await tx
+      .insert(fxRates)
+      .values({
+        entityId,
+        currency,
+        asOfDate: input.asOfDate,
+        rate: rate.toString(),
+        createdBy: userId,
+      })
+      .onConflictDoUpdate({
+        target: [fxRates.entityId, fxRates.currency, fxRates.asOfDate],
+        set: { rate: rate.toString() },
+      });
+
+    await writeAudit(tx, {
       entityId,
-      currency,
-      asOfDate: input.asOfDate,
-      rate: rate.toString(),
-      createdBy: userId,
-    })
-    .onConflictDoUpdate({
-      target: [fxRates.entityId, fxRates.currency, fxRates.asOfDate],
-      set: { rate: rate.toString() },
+      userId,
+      action: "FX_RATE_SET",
+      tableName: "fx_rates",
+      recordId: `${currency}@${input.asOfDate}`,
+      afterState: { currency, asOfDate: input.asOfDate, rate: rate.toString(), base },
     });
-
-  await writeAudit(db, {
-    entityId,
-    userId,
-    action: "FX_RATE_SET",
-    tableName: "fx_rates",
-    recordId: `${currency}@${input.asOfDate}`,
-    afterState: { currency, asOfDate: input.asOfDate, rate: rate.toString(), base },
   });
 }
 
 export async function deleteFxRate(entityId: string, rateId: string, userId: string) {
-  const [row] = await db
-    .select()
-    .from(fxRates)
-    .where(and(eq(fxRates.id, rateId), eq(fxRates.entityId, entityId)));
-  if (!row) throw new FxError("Rate not found");
+  return db.transaction(async (tx) => {
+    const [row] = await tx
+      .select()
+      .from(fxRates)
+      .where(and(eq(fxRates.id, rateId), eq(fxRates.entityId, entityId)));
+    if (!row) throw new FxError("Rate not found");
 
-  await db.delete(fxRates).where(eq(fxRates.id, rateId));
-  await writeAudit(db, {
-    entityId,
-    userId,
-    action: "FX_RATE_DELETED",
-    tableName: "fx_rates",
-    recordId: rateId,
-    beforeState: { currency: row.currency, asOfDate: row.asOfDate, rate: row.rate },
+    await tx.delete(fxRates).where(eq(fxRates.id, rateId));
+    await writeAudit(tx, {
+      entityId,
+      userId,
+      action: "FX_RATE_DELETED",
+      tableName: "fx_rates",
+      recordId: rateId,
+      beforeState: { currency: row.currency, asOfDate: row.asOfDate, rate: row.rate },
+    });
   });
 }
 

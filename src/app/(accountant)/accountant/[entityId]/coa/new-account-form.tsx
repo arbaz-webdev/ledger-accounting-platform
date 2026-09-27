@@ -39,6 +39,15 @@ export function NewAccountForm({ entityId }: { entityId: string }) {
         <IconPlus className="h-4 w-4" />
         {pending ? "Adding…" : "Add account"}
       </button>
+      <div className="w-52">
+        <label className="field-label" htmlFor="new-account-purpose">Purpose / subtype</label>
+        <select id="new-account-purpose" name="subType" className="select">
+          <option value="">Ordinary account</option><option value="cash_and_bank">Cash / bank (asset)</option>
+          <option value="prepayment">Prepayment (asset)</option><option value="fixed_asset">Fixed asset</option>
+          <option value="contra_asset">Contra asset</option><option value="contra_revenue">Contra revenue</option>
+          <option value="contra_cogs">Contra COGS</option><option value="loan">Loan liability</option>
+        </select>
+      </div>
       {state.error && <span className="text-[0.8125rem] text-[var(--negative)]">{state.error}</span>}
     </form>
   );

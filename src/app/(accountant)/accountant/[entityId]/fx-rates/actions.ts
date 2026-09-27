@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { requireAccountant, assertEntityAccess } from "@/lib/auth";
-import { requireModule } from "@/services/permissions";
+import { requireModuleEdit as requireModule } from "@/services/permissions";
 import { setFxRate, deleteFxRate, FxError } from "@/services/fx";
 
 export async function setFxRateAction(formData: FormData): Promise<void> {

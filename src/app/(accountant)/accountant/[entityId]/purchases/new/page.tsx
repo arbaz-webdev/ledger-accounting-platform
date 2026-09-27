@@ -1,5 +1,6 @@
 import { listContacts } from "@/services/contacts";
 import { listAccounts } from "@/services/coa";
+import { allowsBillCoding } from "@/lib/account-policy";
 import { listItems } from "@/services/inventory";
 import { getBaseCurrency, listEntityCurrencies } from "@/services/fx";
 import { resolveMapping } from "@/services/mappings";
@@ -27,8 +28,7 @@ export default async function NewBillPage({
   // Bills usually hit COGS, expenses or assets (e.g. inventory, fixed assets)
   const expenseAccounts = accounts.filter(
     (a) =>
-      a.isActive &&
-      ["cogs", "expense", "other_expense", "asset", "tax"].includes(a.type)
+      allowsBillCoding(a)
   );
 
   if (activeSuppliers.length === 0) {

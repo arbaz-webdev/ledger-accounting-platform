@@ -2,13 +2,21 @@
  * Money display follows accounting convention: negatives in parentheses,
  * e.g. -1250.5 -> "(1,250.50)". Always pair with tabular numerals (.num).
  */
+import Decimal from "decimal.js";
+
+function formatDecimal(value: string | number, places: number): string {
+  const n = new Decimal(value || 0);
+  const [whole, fractional] = n.abs().toFixed(places, Decimal.ROUND_HALF_UP).split(".");
+  const formatted = `${whole.replace(/\B(?=(\d{3})+(?!\d))/g, ",")}.${fractional}`;
+  return n.isNegative() ? `(${formatted})` : formatted;
+}
+
 export function fmtMoney(value: string | number): string {
-  const n = typeof value === "string" ? Number(value) : value;
-  const abs = Math.abs(n).toLocaleString("en-US", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  });
-  return n < 0 ? `(${abs})` : abs;
+  return formatDecimal(value, 2);
+}
+
+export function fmtUnitPrice(value: string | number): string {
+  return formatDecimal(value, 4);
 }
 
 export function isNegative(value: string | number): boolean {

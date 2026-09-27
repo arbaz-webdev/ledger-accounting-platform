@@ -1,7 +1,7 @@
 import "server-only";
 import { and, eq } from "drizzle-orm";
 import { db } from "@/db";
-import { userEntityAccess } from "@/db/schema";
+import { userEntityAccess, users, entities } from "@/db/schema";
 import { writeAudit } from "@/services/audit";
 import type { SessionUser, UserRole } from "@/lib/auth";
 
@@ -161,7 +161,19 @@ export function defaultPermissionsFor(role: UserRole): Record<string, boolean> {
   return granted;
 }
 
-export type EntityPermissions = Record<string, boolean>;
+export type Capability = "view" | "edit" | "approve";
+export type EntityPermissions = Record<string, boolean | Capability>;
+const CAPABILITY_RANK: Record<Capability, number> = { view: 1, edit: 2, approve: 3 };
+
+export function permissionAllows(role: UserRole, moduleKey: ModuleKey, grant: boolean | Capability | undefined, capability: Capability = "view") {
+  if (!roleAllows(role, moduleKey)) return false;
+  const accountant = ALL_ACCOUNTANT.includes(role);
+  if (capability !== "view" && !accountant) return false;
+  if (capability === "approve" && !bypassesMatrix(role)) return false;
+  if (bypassesMatrix(role)) return true;
+  const effective = grant === true ? (accountant ? "edit" : "view") : grant;
+  return typeof effective === "string" && (CAPABILITY_RANK[effective] ?? 0) >= CAPABILITY_RANK[capability];
+}
 
 export async function getEntityPermissions(
   userId: string,
@@ -181,12 +193,13 @@ export async function getEntityPermissions(
 export async function hasModule(
   user: SessionUser,
   entityId: string,
-  moduleKey: ModuleKey
+  moduleKey: ModuleKey,
+  capability: Capability = "view"
 ): Promise<boolean> {
   if (!roleAllows(user.role, moduleKey)) return false;
   if (bypassesMatrix(user.role)) return true;
   const perms = await getEntityPermissions(user.id, entityId);
-  return perms[moduleKey] === true;
+  return permissionAllows(user.role, moduleKey, perms[moduleKey], capability);
 }
 
 /** All modules this user can use in this entity — drives nav rendering. */
@@ -199,7 +212,7 @@ export async function allowedModules(
   const perms = bypass ? null : await getEntityPermissions(user.id, entityId);
   for (const def of MODULE_DEFS) {
     if (!def.allowedRoles.includes(user.role)) continue;
-    if (bypass || perms?.[def.key] === true) allowed.add(def.key);
+    if (bypass || permissionAllows(user.role, def.key, perms?.[def.key])) allowed.add(def.key);
   }
   return allowed;
 }
@@ -208,14 +221,23 @@ export async function allowedModules(
 export async function requireModule(
   user: SessionUser,
   entityId: string,
-  moduleKey: ModuleKey
+  moduleKey: ModuleKey,
+  capability: Capability = "view"
 ): Promise<void> {
-  if (await hasModule(user, entityId, moduleKey)) return;
+  if (await hasModule(user, entityId, moduleKey, capability)) return;
   const def = MODULE_DEFS.find((d) => d.key === moduleKey);
   throw new PermissionError(
     moduleKey,
     `Your account does not have access to ${def?.label ?? moduleKey} for this client.`
   );
+}
+
+export async function requireModuleEdit(user: SessionUser, entityId: string, moduleKey: ModuleKey) {
+  return requireModule(user, entityId, moduleKey, "edit");
+}
+
+export async function requireModuleApprove(user: SessionUser, entityId: string, moduleKey: ModuleKey) {
+  return requireModule(user, entityId, moduleKey, "approve");
 }
 
 export async function setEntityPermissions(
@@ -224,24 +246,42 @@ export async function setEntityPermissions(
   permissions: EntityPermissions,
   actingUserId: string
 ): Promise<void> {
-  const [existing] = await db
-    .select({ perms: userEntityAccess.modulePermissions })
-    .from(userEntityAccess)
-    .where(and(eq(userEntityAccess.userId, targetUserId), eq(userEntityAccess.entityId, entityId)));
-  if (!existing) throw new Error("That user has no access to this entity yet");
+  return db.transaction(async (tx) => {
+    const [actor] = await tx.select().from(users).where(eq(users.id, actingUserId));
+    const [target] = await tx.select().from(users).where(eq(users.id, targetUserId));
+    const [entity] = await tx.select().from(entities).where(eq(entities.id, entityId));
+    if (!actor || !target || !entity || !actor.isActive || !bypassesMatrix(actor.role as UserRole) ||
+      (actor.role !== "platform_admin" && (entity.firmId !== actor.firmId || target.firmId !== actor.firmId)) || target.firmId !== entity.firmId) {
+      throw new Error("Permission administration denied for this firm or entity");
+    }
+    const sanitised: EntityPermissions = {};
+    for (const def of MODULE_DEFS) {
+      const grant = permissions[def.key] ?? false;
+      if (!roleAllows(target.role as UserRole, def.key)) continue;
+      if (![true, false, "view", "edit", "approve"].includes(grant)) throw new Error("Invalid permission capability");
+      if ((grant === "edit" || grant === "approve") && !ALL_ACCOUNTANT.includes(target.role as UserRole)) throw new Error("Customer roles are read-only");
+      if (grant === "approve" && !bypassesMatrix(target.role as UserRole)) throw new Error("Approval authority is restricted to firm administrators");
+      sanitised[def.key] = grant;
+    }
+    const [existing] = await tx
+      .select({ perms: userEntityAccess.modulePermissions })
+      .from(userEntityAccess)
+      .where(and(eq(userEntityAccess.userId, targetUserId), eq(userEntityAccess.entityId, entityId)));
+    if (!existing) throw new Error("That user has no access to this entity yet");
 
-  await db
-    .update(userEntityAccess)
-    .set({ modulePermissions: permissions })
-    .where(and(eq(userEntityAccess.userId, targetUserId), eq(userEntityAccess.entityId, entityId)));
+    await tx
+      .update(userEntityAccess)
+      .set({ modulePermissions: sanitised })
+      .where(and(eq(userEntityAccess.userId, targetUserId), eq(userEntityAccess.entityId, entityId)));
 
-  await writeAudit(db, {
-    entityId,
-    userId: actingUserId,
-    action: "PERMISSIONS_UPDATED",
-    tableName: "user_entity_access",
-    recordId: targetUserId,
-    beforeState: existing.perms,
-    afterState: permissions,
+    await writeAudit(tx, {
+      entityId,
+      userId: actingUserId,
+      action: "PERMISSIONS_UPDATED",
+      tableName: "user_entity_access",
+      recordId: targetUserId,
+      beforeState: existing.perms,
+      afterState: sanitised,
+  });
   });
 }

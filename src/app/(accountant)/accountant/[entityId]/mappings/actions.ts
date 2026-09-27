@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { requireAccountant, assertEntityAccess } from "@/lib/auth";
-import { requireModule } from "@/services/permissions";
+import { requireModuleEdit as requireModule } from "@/services/permissions";
 import { setMapping, seedDefaultMappings, type MappingKey } from "@/services/mappings";
 
 export async function setMappingAction(formData: FormData): Promise<void> {

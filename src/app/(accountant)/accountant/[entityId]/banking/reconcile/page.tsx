@@ -4,6 +4,8 @@ import { fmtDate, fmtMoney, todayIso } from "@/lib/format";
 import { PageHeader, EmptyState } from "@/components/ui";
 import { IconBank, IconCheck } from "@/components/icons";
 import { ReconForm } from "./recon-form";
+import { requireAccountant } from "@/lib/auth";
+import { hasModule } from "@/services/permissions";
 
 export default async function ReconcilePage({
   params,
@@ -13,6 +15,8 @@ export default async function ReconcilePage({
   searchParams: Promise<{ account?: string; date?: string; error?: string; done?: string }>;
 }) {
   const { entityId } = await params;
+  const user = await requireAccountant();
+  const canApprove = await hasModule(user, entityId, "banking", "approve");
   const sp = await searchParams;
 
   const accounts = await listBankAccounts(entityId);
@@ -82,7 +86,8 @@ export default async function ReconcilePage({
         </p>
       )}
 
-      <ReconForm entityId={entityId} workspace={workspace} />
+      {canApprove ? <ReconForm entityId={entityId} workspace={workspace} /> :
+        <p className="banner banner-warn" role="status">Reconciliation approval requires a firm owner or administrator. You can review the workspace and reconciliation history.</p>}
 
       {history.length > 0 && (
         <div className="card mt-6 overflow-hidden">

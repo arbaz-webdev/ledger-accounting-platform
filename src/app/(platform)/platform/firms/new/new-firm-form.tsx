@@ -57,8 +57,8 @@ export function NewFirmForm({ plans }: { plans: PlanOption[] }) {
               name="ownerPassword"
               type="password"
               required
-              minLength={8}
-              placeholder="At least 8 characters"
+              minLength={12}
+              placeholder="At least 12 characters"
               className="input"
             />
             <p className="mt-1 text-[0.6875rem] text-[var(--ink-400)]">

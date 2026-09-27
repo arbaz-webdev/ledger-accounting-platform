@@ -1,7 +1,8 @@
 import "server-only";
 import Decimal from "decimal.js";
+import { calculateDocumentLine } from "@/lib/document-math";
 import { and, desc, eq, sql } from "drizzle-orm";
-import { db, withTransaction } from "@/db";
+import { db } from "@/db";
 import { invoices, invoiceLines, contacts, chartOfAccounts, settlements } from "@/db/schema";
 import { postJournalEntry } from "@/services/journal";
 import { resolveMapping, getMappings } from "@/services/mappings";
@@ -59,238 +60,239 @@ export type CreateInvoiceInput = {
 };
 
 function computeLine(line: InvoiceLineInput) {
-  const qty = new Decimal(line.quantity || 0);
-  const price = new Decimal(line.unitPrice || 0);
-  const rate = new Decimal(line.taxRate || 0);
-  const net = qty.times(price).toDecimalPlaces(2);
-  const tax = net.times(rate).dividedBy(100).toDecimalPlaces(2);
-  return { qty, price, rate, net, tax };
+  return calculateDocumentLine(line);
 }
 
 /** Create a draft invoice with a generated number. No ledger impact. */
 export async function createInvoiceDraft(input: CreateInvoiceInput, userId: string) {
-  if (input.lines.length === 0) throw new InvoiceError("An invoice needs at least one line");
+  return db.transaction(async (tx) => {
+    if (input.lines.length === 0) throw new InvoiceError("An invoice needs at least one line");
 
-  const computed = input.lines.map(computeLine);
-  const subtotal = computed.reduce((s, c) => s.plus(c.net), new Decimal(0));
-  const taxTotal = computed.reduce((s, c) => s.plus(c.tax), new Decimal(0));
-  const total = subtotal.plus(taxTotal);
-  if (total.lessThanOrEqualTo(0)) throw new InvoiceError("Invoice total must be greater than zero");
+    const computed = input.lines.map(computeLine);
+    const subtotal = computed.reduce((s, c) => s.plus(c.net), new Decimal(0));
+    const taxTotal = computed.reduce((s, c) => s.plus(c.tax), new Decimal(0));
+    const total = subtotal.plus(taxTotal);
+    if (total.lessThanOrEqualTo(0)) throw new InvoiceError("Invoice total must be greater than zero");
 
-  const baseCurrency = await getBaseCurrency(input.entityId);
-  const currency = (input.currency || baseCurrency).toUpperCase();
-  const fxRate =
-    input.fxRate !== undefined && input.fxRate !== ""
-      ? new Decimal(input.fxRate)
-      : await resolveRate(input.entityId, currency, input.issueDate);
-  if (fxRate.lessThanOrEqualTo(0)) throw new InvoiceError("Exchange rate must be greater than zero");
+    const baseCurrency = await getBaseCurrency(input.entityId);
+    const currency = (input.currency || baseCurrency).toUpperCase();
+    const fxRate =
+      input.fxRate !== undefined && input.fxRate !== ""
+        ? new Decimal(input.fxRate)
+        : await resolveRate(input.entityId, currency, input.issueDate);
+    if (fxRate.lessThanOrEqualTo(0)) throw new InvoiceError("Exchange rate must be greater than zero");
 
-  const numRows = await db.execute(
-    sql`SELECT next_document_number(${input.entityId}::uuid, 'invoice') AS n`
-  );
-  const seq = Number((numRows.rows[0] as { n: string | number }).n);
-  const invoiceNumber = `INV-${String(seq).padStart(4, "0")}`;
+    const numRows = await tx.execute(
+      sql`SELECT next_document_number(${input.entityId}::uuid, 'invoice') AS n`
+    );
+    const seq = Number((numRows.rows[0] as { n: string | number }).n);
+    const invoiceNumber = `INV-${String(seq).padStart(4, "0")}`;
 
-  const [invoice] = await db
-    .insert(invoices)
-    .values({
+    const [invoice] = await tx
+      .insert(invoices)
+      .values({
+        entityId: input.entityId,
+        customerId: input.customerId,
+        invoiceNumber,
+        issueDate: input.issueDate,
+        dueDate: input.dueDate,
+        notes: input.notes,
+        currency,
+        fxRate: fxRate.toString(),
+        subtotal: subtotal.toFixed(2),
+        taxTotal: taxTotal.toFixed(2),
+        total: total.toFixed(2),
+        createdBy: userId,
+      })
+      .returning();
+
+    await tx.insert(invoiceLines).values(
+      input.lines.map((l, i) => ({
+        invoiceId: invoice.id,
+        lineNo: i + 1,
+        description: l.description,
+        quantity: computed[i].qty.toString(),
+        unitPrice: computed[i].price.toString(),
+        revenueAccountId: l.revenueAccountId,
+        taxRate: computed[i].rate.toString(),
+        netAmount: computed[i].net.toFixed(2),
+        taxAmount: computed[i].tax.toFixed(2),
+        itemId: l.itemId || undefined,
+      }))
+    );
+
+    await writeAudit(tx, {
       entityId: input.entityId,
-      customerId: input.customerId,
-      invoiceNumber,
-      issueDate: input.issueDate,
-      dueDate: input.dueDate,
-      notes: input.notes,
-      currency,
-      fxRate: fxRate.toString(),
-      subtotal: subtotal.toFixed(2),
-      taxTotal: taxTotal.toFixed(2),
-      total: total.toFixed(2),
-      createdBy: userId,
-    })
-    .returning();
+      userId,
+      action: "INVOICE_CREATED",
+      tableName: "invoices",
+      recordId: invoice.id,
+      afterState: { invoiceNumber, total: total.toFixed(2) },
+    });
 
-  await db.insert(invoiceLines).values(
-    input.lines.map((l, i) => ({
-      invoiceId: invoice.id,
-      lineNo: i + 1,
-      description: l.description,
-      quantity: computed[i].qty.toString(),
-      unitPrice: computed[i].price.toString(),
-      revenueAccountId: l.revenueAccountId,
-      taxRate: computed[i].rate.toString(),
-      netAmount: computed[i].net.toFixed(2),
-      taxAmount: computed[i].tax.toFixed(2),
-      itemId: l.itemId || undefined,
-    }))
-  );
-
-  await writeAudit(db, {
-    entityId: input.entityId,
-    userId,
-    action: "INVOICE_CREATED",
-    tableName: "invoices",
-    recordId: invoice.id,
-    afterState: { invoiceNumber, total: total.toFixed(2) },
+    return invoice;
   });
-
-  return invoice;
 }
 
 /** Post a draft invoice to the ledger (spec 6.1). */
 export async function postInvoice(invoiceId: string, entityId: string, userId: string) {
-  const [invoice] = await db
-    .select()
-    .from(invoices)
-    .where(and(eq(invoices.id, invoiceId), eq(invoices.entityId, entityId)));
-  if (!invoice) throw new InvoiceError("Invoice not found");
-  if (invoice.status !== "draft") {
-    throw new InvoiceError(`Only draft invoices can be posted (this one is ${invoice.status})`);
-  }
-
-  const lines = await db
-    .select()
-    .from(invoiceLines)
-    .where(eq(invoiceLines.invoiceId, invoiceId));
-  const [customer] = await db
-    .select({ name: contacts.name })
-    .from(contacts)
-    .where(eq(contacts.id, invoice.customerId));
-
-  const cache = await getMappings(entityId);
-  const arAccount = await resolveMapping(entityId, "ar_control", cache);
-  const taxAccount = await resolveMapping(entityId, "sales_tax_payable", cache);
-
-  // Credit revenue grouped by account so the JE stays compact
-  const revenueByAccount = new Map<string, Decimal>();
-  for (const l of lines) {
-    const prev = revenueByAccount.get(l.revenueAccountId) ?? new Decimal(0);
-    revenueByAccount.set(l.revenueAccountId, prev.plus(new Decimal(l.netAmount)));
-  }
-  const taxTotal = new Decimal(invoice.taxTotal);
-
-  // Inventory lines: total quantity sold per item
-  const qtyByItem = new Map<string, Decimal>();
-  for (const l of lines) {
-    if (!l.itemId) continue;
-    const prev = qtyByItem.get(l.itemId) ?? new Decimal(0);
-    qtyByItem.set(l.itemId, prev.plus(new Decimal(l.quantity)));
-  }
-
-  return withTransaction(async (tx) => {
-    // Plan stock consumption first (locks lots): COGS must be known before
-    // the JE lines can be built. Throws on insufficient stock.
-    const plans = new Map<string, ConsumptionPlan>();
-    let cogsTotal = new Decimal(0);
-    for (const [itemId, qty] of qtyByItem) {
-      const { plan } = await planConsumptionInTx(tx, entityId, itemId, qty);
-      plans.set(itemId, plan);
-      cogsTotal = cogsTotal.plus(plan.totalCost);
+  return db.transaction(async (tx) => {
+    const [invoice] = await tx
+      .select()
+      .from(invoices)
+      .where(and(eq(invoices.id, invoiceId), eq(invoices.entityId, entityId))).for("update");
+    if (!invoice) throw new InvoiceError("Invoice not found");
+    if (invoice.status !== "draft") {
+      throw new InvoiceError(`Only draft invoices can be posted (this one is ${invoice.status})`);
     }
 
-    // Document-currency lines carry the invoice's currency + rate; the ledger
-    // stores both the transaction amount and the base amount (debit_base).
-    const fx = { currency: invoice.currency, fxRate: invoice.fxRate };
-    const jeLines: {
-      accountId: string;
-      description?: string;
-      debit?: string;
-      credit?: string;
-      currency?: string;
-      fxRate?: string;
-    }[] = [
-      {
-        accountId: arAccount,
-        description: `${invoice.invoiceNumber} — ${customer?.name ?? ""}`,
-        debit: invoice.total,
-        ...fx,
-      },
-    ];
-    for (const [accountId, amount] of revenueByAccount) {
-      if (amount.isZero()) continue;
-      jeLines.push({ accountId, credit: amount.toFixed(2), ...fx });
+    const lines = await tx
+      .select()
+      .from(invoiceLines)
+      .where(eq(invoiceLines.invoiceId, invoiceId));
+    const [customer] = await tx
+      .select({ name: contacts.name })
+      .from(contacts)
+      .where(eq(contacts.id, invoice.customerId));
+
+    const cache = await getMappings(entityId);
+    const arAccount = await resolveMapping(entityId, "ar_control", cache);
+    const taxAccount = await resolveMapping(entityId, "sales_tax_payable", cache);
+
+    // Credit revenue grouped by account so the JE stays compact
+    const revenueByAccount = new Map<string, Decimal>();
+    for (const l of lines) {
+      const prev = revenueByAccount.get(l.revenueAccountId) ?? new Decimal(0);
+      revenueByAccount.set(l.revenueAccountId, prev.plus(new Decimal(l.netAmount)));
     }
-    if (taxTotal.greaterThan(0)) {
-      jeLines.push({ accountId: taxAccount, description: "Sales tax", credit: taxTotal.toFixed(2), ...fx });
-    }
-    if (cogsTotal.greaterThan(0)) {
-      const cogsAccount = await resolveMapping(entityId, "cogs", cache);
-      const inventoryAccount = await resolveMapping(entityId, "inventory_asset", cache);
-      jeLines.push({ accountId: cogsAccount, description: "Cost of goods sold", debit: cogsTotal.toFixed(2) });
-      jeLines.push({ accountId: inventoryAccount, description: "Inventory issued", credit: cogsTotal.toFixed(2) });
+    const taxTotal = new Decimal(invoice.taxTotal);
+
+    // Inventory lines: total quantity sold per item
+    const qtyByItem = new Map<string, Decimal>();
+    for (const l of lines) {
+      if (!l.itemId) continue;
+      const prev = qtyByItem.get(l.itemId) ?? new Decimal(0);
+      qtyByItem.set(l.itemId, prev.plus(new Decimal(l.quantity)));
     }
 
-    const { jeId, jeNumber } = await postJournalEntry(
-      {
-        entityId,
-        date: invoice.issueDate,
-        description: `Invoice ${invoice.invoiceNumber} — ${customer?.name ?? "customer"}`,
-        reference: invoice.invoiceNumber,
-        sourceModule: "invoice",
-        lines: jeLines,
-      },
-      userId,
-      tx
-    );
 
-    // Record the planned consumption against the same JE
-    for (const [itemId, qty] of qtyByItem) {
-      await recordPlannedConsumptionInTx(
-        tx,
+      // Plan stock consumption first (locks lots): COGS must be known before
+      // the JE lines can be built. Throws on insufficient stock.
+      const plans = new Map<string, ConsumptionPlan>();
+      let cogsTotal = new Decimal(0);
+      for (const [itemId, qty] of qtyByItem) {
+        const { plan } = await planConsumptionInTx(tx, entityId, itemId, qty);
+        plans.set(itemId, plan);
+        cogsTotal = cogsTotal.plus(plan.totalCost);
+      }
+
+      // Document-currency lines carry the invoice's currency + rate; the ledger
+      // stores both the transaction amount and the base amount (debit_base).
+      const fx = { currency: invoice.currency, fxRate: invoice.fxRate };
+      const jeLines: {
+        accountId: string;
+        description?: string;
+        debit?: string;
+        credit?: string;
+        currency?: string;
+        fxRate?: string;
+      }[] = [
+        {
+          accountId: arAccount,
+          description: `${invoice.invoiceNumber} — ${customer?.name ?? ""}`,
+          debit: invoice.total,
+          ...fx,
+        },
+      ];
+      for (const [accountId, amount] of revenueByAccount) {
+        if (amount.isZero()) continue;
+        jeLines.push({ accountId, credit: amount.toFixed(2), ...fx });
+      }
+      if (taxTotal.greaterThan(0)) {
+        jeLines.push({ accountId: taxAccount, description: "Sales tax", credit: taxTotal.toFixed(2), ...fx });
+      }
+      if (cogsTotal.greaterThan(0)) {
+        const cogsAccount = await resolveMapping(entityId, "cogs", cache);
+        const inventoryAccount = await resolveMapping(entityId, "inventory_asset", cache);
+        jeLines.push({ accountId: cogsAccount, description: "Cost of goods sold", debit: cogsTotal.toFixed(2) });
+        jeLines.push({ accountId: inventoryAccount, description: "Inventory issued", credit: cogsTotal.toFixed(2) });
+      }
+
+      const { jeId, jeNumber } = await postJournalEntry(
         {
           entityId,
-          itemId,
           date: invoice.issueDate,
-          quantity: qty,
-          plan: plans.get(itemId)!,
-          jeId,
-          invoiceId,
+          description: `Invoice ${invoice.invoiceNumber} — ${customer?.name ?? "customer"}`,
           reference: invoice.invoiceNumber,
+          sourceModule: "invoice",
+          lines: jeLines,
         },
-        userId
+        userId,
+        tx
       );
-    }
 
-    await tx
-      .update(invoices)
-      .set({ status: "posted", jeId, postedAt: new Date() })
-      .where(eq(invoices.id, invoiceId));
+      // Record the planned consumption against the same JE
+      for (const [itemId, qty] of qtyByItem) {
+        await recordPlannedConsumptionInTx(
+          tx,
+          {
+            entityId,
+            itemId,
+            date: invoice.issueDate,
+            quantity: qty,
+            plan: plans.get(itemId)!,
+            jeId,
+            invoiceId,
+            reference: invoice.invoiceNumber,
+          },
+          userId
+        );
+      }
 
-    await writeAudit(tx, {
-      entityId,
-      userId,
-      action: "INVOICE_POSTED",
-      tableName: "invoices",
-      recordId: invoiceId,
-      afterState: {
-        invoiceNumber: invoice.invoiceNumber,
-        jeNumber,
-        total: invoice.total,
-        ...(cogsTotal.greaterThan(0) ? { cogs: cogsTotal.toFixed(2) } : {}),
-      },
-    });
+      await tx
+        .update(invoices)
+        .set({ status: "posted", jeId, postedAt: new Date() })
+        .where(eq(invoices.id, invoiceId));
 
-    return { jeId, jeNumber };
+      await writeAudit(tx, {
+        entityId,
+        userId,
+        action: "INVOICE_POSTED",
+        tableName: "invoices",
+        recordId: invoiceId,
+        afterState: {
+          invoiceNumber: invoice.invoiceNumber,
+          jeNumber,
+          total: invoice.total,
+          ...(cogsTotal.greaterThan(0) ? { cogs: cogsTotal.toFixed(2) } : {}),
+        },
+      });
+
+      return { jeId, jeNumber };
+
   });
 }
 
 export async function deleteInvoiceDraft(invoiceId: string, entityId: string, userId: string) {
-  const [invoice] = await db
-    .select()
-    .from(invoices)
-    .where(and(eq(invoices.id, invoiceId), eq(invoices.entityId, entityId)));
-  if (!invoice) throw new InvoiceError("Invoice not found");
-  if (invoice.status !== "draft") {
-    throw new InvoiceError("Only draft invoices can be discarded");
-  }
-  await writeAudit(db, {
-    entityId,
-    userId,
-    action: "INVOICE_DISCARDED",
-    tableName: "invoices",
-    recordId: invoiceId,
-    beforeState: { invoiceNumber: invoice.invoiceNumber },
+  return db.transaction(async (tx) => {
+    const [invoice] = await tx
+      .select()
+      .from(invoices)
+      .where(and(eq(invoices.id, invoiceId), eq(invoices.entityId, entityId)));
+    if (!invoice) throw new InvoiceError("Invoice not found");
+    if (invoice.status !== "draft") {
+      throw new InvoiceError("Only draft invoices can be discarded");
+    }
+    await writeAudit(tx, {
+      entityId,
+      userId,
+      action: "INVOICE_DISCARDED",
+      tableName: "invoices",
+      recordId: invoiceId,
+      beforeState: { invoiceNumber: invoice.invoiceNumber },
+    });
+    await tx.delete(invoices).where(eq(invoices.id, invoiceId));
   });
-  await db.delete(invoices).where(eq(invoices.id, invoiceId));
 }
 
 /** Invoice list with live outstanding balance. */

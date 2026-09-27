@@ -1,8 +1,9 @@
 import "server-only";
 import { and, asc, eq, sql } from "drizzle-orm";
-import { db } from "@/db";
+import { db, type Db, type Tx } from "@/db";
 import { bankRules, chartOfAccounts } from "@/db/schema";
 import { writeAudit } from "@/services/audit";
+import { assertPostingAccount } from "@/services/account-policy";
 
 /**
  * Categorisation rules engine (spec 5.1 "Auto-Categorise").
@@ -98,28 +99,31 @@ export async function createRule(
   },
   userId: string
 ) {
-  const [rule] = await db
-    .insert(bankRules)
-    .values({
-      entityId: input.entityId,
-      matchText: input.matchText.trim(),
-      matchType: input.matchType ?? "contains",
-      direction: input.direction ?? "any",
-      accountId: input.accountId,
-      priority: input.priority ?? 100,
-      createdBy: userId,
-    })
-    .returning();
+  return db.transaction(async (tx) => {
+    await assertPostingAccount(input.entityId, input.accountId, "category", tx);
+    const [rule] = await tx
+      .insert(bankRules)
+      .values({
+        entityId: input.entityId,
+        matchText: input.matchText.trim(),
+        matchType: input.matchType ?? "contains",
+        direction: input.direction ?? "any",
+        accountId: input.accountId,
+        priority: input.priority ?? 100,
+        createdBy: userId,
+      })
+      .returning();
 
-  await writeAudit(db, {
-    entityId: input.entityId,
-    userId,
-    action: "BANK_RULE_CREATED",
-    tableName: "bank_rules",
-    recordId: rule.id,
-    afterState: { matchText: rule.matchText, direction: rule.direction },
+    await writeAudit(tx, {
+      entityId: input.entityId,
+      userId,
+      action: "BANK_RULE_CREATED",
+      tableName: "bank_rules",
+      recordId: rule.id,
+      afterState: { matchText: rule.matchText, direction: rule.direction },
+    });
+    return rule;
   });
-  return rule;
 }
 
 export async function setRuleActive(
@@ -128,36 +132,40 @@ export async function setRuleActive(
   isActive: boolean,
   userId: string
 ) {
-  await db
-    .update(bankRules)
-    .set({ isActive })
-    .where(and(eq(bankRules.id, ruleId), eq(bankRules.entityId, entityId)));
-  await writeAudit(db, {
-    entityId,
-    userId,
-    action: "BANK_RULE_UPDATED",
-    tableName: "bank_rules",
-    recordId: ruleId,
-    afterState: { isActive },
+  return db.transaction(async (tx) => {
+    await tx
+      .update(bankRules)
+      .set({ isActive })
+      .where(and(eq(bankRules.id, ruleId), eq(bankRules.entityId, entityId)));
+    await writeAudit(tx, {
+      entityId,
+      userId,
+      action: "BANK_RULE_UPDATED",
+      tableName: "bank_rules",
+      recordId: ruleId,
+      afterState: { isActive },
+    });
   });
 }
 
 export async function deleteRule(ruleId: string, entityId: string, userId: string) {
-  await db.delete(bankRules).where(and(eq(bankRules.id, ruleId), eq(bankRules.entityId, entityId)));
-  await writeAudit(db, {
-    entityId,
-    userId,
-    action: "BANK_RULE_DELETED",
-    tableName: "bank_rules",
-    recordId: ruleId,
+  return db.transaction(async (tx) => {
+    await tx.delete(bankRules).where(and(eq(bankRules.id, ruleId), eq(bankRules.entityId, entityId)));
+    await writeAudit(tx, {
+      entityId,
+      userId,
+      action: "BANK_RULE_DELETED",
+      tableName: "bank_rules",
+      recordId: ruleId,
+    });
   });
 }
 
-export async function bumpRuleUsage(ruleIds: string[]) {
+export async function bumpRuleUsage(ruleIds: string[], executor: Db | Tx = db) {
   const unique = [...new Set(ruleIds)];
   for (const id of unique) {
     const count = ruleIds.filter((r) => r === id).length;
-    await db
+    await executor
       .update(bankRules)
       .set({ timesApplied: sql`${bankRules.timesApplied} + ${count}` })
       .where(eq(bankRules.id, id));

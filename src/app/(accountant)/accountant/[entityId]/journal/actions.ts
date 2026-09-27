@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { ZodError } from "zod";
 import { requireAccountant, assertEntityAccess } from "@/lib/auth";
-import { requireModule } from "@/services/permissions";
+import { requireModuleEdit as requireModule } from "@/services/permissions";
 import {
   postJournalEntry,
   saveDraftJournalEntry,

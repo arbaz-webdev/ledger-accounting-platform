@@ -109,10 +109,12 @@ export async function savePermissionsAction(formData: FormData): Promise<void> {
 
   // Only persist modules the target's role may hold at all — the role gate is
   // re-applied at read time too, so this is belt and braces.
-  const permissions: Record<string, boolean> = {};
+  const permissions: import("@/services/permissions").EntityPermissions = {};
   for (const def of MODULE_DEFS) {
     if (!roleAllows(targetRole, def.key as ModuleKey)) continue;
-    permissions[def.key] = formData.get(`perm_${def.key}`) === "on";
+    const value = String(formData.get(`perm_${def.key}`) ?? "none");
+    if (!["none", "view", "edit", "approve"].includes(value)) throw new Error("Invalid permission capability");
+    permissions[def.key] = value === "none" ? false : value as "view" | "edit" | "approve";
   }
 
   const base = `/accountant/users/${targetUserId}`;

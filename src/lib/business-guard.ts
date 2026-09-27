@@ -1,6 +1,6 @@
 import "server-only";
 import { redirect } from "next/navigation";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { db } from "@/db";
 import { entities, userEntityAccess } from "@/db/schema";
 import { requireBusinessUser, type SessionUser } from "@/lib/auth";
@@ -32,7 +32,7 @@ export async function portalContext(): Promise<PortalContext> {
     })
     .from(entities)
     .innerJoin(userEntityAccess, eq(userEntityAccess.entityId, entities.id))
-    .where(eq(userEntityAccess.userId, user.id))
+    .where(and(eq(userEntityAccess.userId, user.id), eq(entities.isActive, true), eq(entities.firmId, user.firmId!)))
     .limit(1);
 
   // /no-access lives outside the portal layout — redirecting to a page that

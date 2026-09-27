@@ -1,4 +1,4 @@
-import { listPeriods } from "@/services/periods";
+import { listPeriods, listPeriodHistory } from "@/services/periods";
 import { togglePeriodLockAction, setupYearAction } from "./actions";
 import { fmtDate, todayIso } from "@/lib/format";
 import { PageHeader } from "@/components/ui";
@@ -15,12 +15,13 @@ export default async function PeriodsPage({
   searchParams,
 }: {
   params: Promise<{ entityId: string }>;
-  searchParams: Promise<{ year?: string }>;
+  searchParams: Promise<{ year?: string; error?: string }>;
 }) {
   const { entityId } = await params;
   const sp = await searchParams;
   const year = Number(sp.year) || Number(todayIso().slice(0, 4));
   const rows = await listPeriods(entityId, year);
+  const history = await listPeriodHistory(entityId);
   const lockedCount = rows.filter((p) => p.isLocked).length;
 
   return (
@@ -42,6 +43,7 @@ export default async function PeriodsPage({
         </div>
       </PageHeader>
 
+      {sp.error && <p role="alert" className="banner banner-error mb-3">{sp.error}</p>}
       {rows.length === 0 ? (
         <div className="card">
           <EmptyState
@@ -88,6 +90,11 @@ export default async function PeriodsPage({
                     <input type="hidden" name="year" value={p.year} />
                     <input type="hidden" name="month" value={p.month} />
                     <input type="hidden" name="lock" value="false" />
+                    <label className="field-label" htmlFor={`reason-${p.id}`}>Unlock reason</label>
+                    <input id={`reason-${p.id}`} name="reason" className="input mb-2" required minLength={5} maxLength={500} />
+                    <label className="mb-2 flex items-center gap-2 text-xs">
+                      <input type="checkbox" name="confirmed" required /> I confirm reopening this period for postings
+                    </label>
                     <button className="btn btn-secondary btn-sm w-full">
                       <IconUnlock className="h-3.5 w-3.5" />
                       Unlock
@@ -105,8 +112,19 @@ export default async function PeriodsPage({
               </div>
             ))}
           </div>
+          <a href={`/accountant/${entityId}/audit`} className="btn btn-secondary mt-4">View lock and unlock audit history</a>
         </>
       )}
+      {history.length > 0 && <details className="card mt-4 p-4">
+        <summary className="cursor-pointer font-semibold">Recent close and unlock history</summary>
+        <ul className="mt-3 space-y-2 text-sm">
+          {history.map(event => {
+            const details = event.details as { reason?: string; year?: number; month?: number; label?: string } | null;
+            return <li key={event.id}>{fmtDate(event.date)} · {event.actor ?? "Administrator"} · {event.action.replaceAll("_", " ")}
+              {details?.label && ` · ${details.label}`}{details?.year && ` · ${details.year}-${details.month}`}{details?.reason && ` · ${details.reason}`}</li>;
+          })}
+        </ul>
+      </details>}
     </div>
   );
 }

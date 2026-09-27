@@ -11,6 +11,7 @@ import { grantAccessAction, revokeAccessAction, savePermissionsAction } from "..
 const ROLE_LABELS: Record<string, string> = {
   platform_admin: "Platform admin",
   firm_admin: "Firm admin",
+  firm_owner: "Firm owner",
   accountant_staff: "Accountant staff",
   business_admin: "Business admin",
   business_staff: "Business staff",
@@ -25,7 +26,7 @@ export default async function UserDetailPage({
   searchParams: Promise<{ error?: string }>;
 }) {
   const actor = await requireAccountant();
-  if (actor.role !== "firm_admin" && actor.role !== "platform_admin") redirect("/accountant");
+  if (actor.role !== "firm_admin" && actor.role !== "firm_owner" && actor.role !== "platform_admin") redirect("/accountant");
   const { userId } = await params;
   const { error } = await searchParams;
 
@@ -38,7 +39,7 @@ export default async function UserDetailPage({
     .from(entities)
     .where(eq(entities.firmId, actor.firmId!));
 
-  const isAdmin = user.role === "firm_admin" || user.role === "platform_admin";
+  const isAdmin = user.role === "firm_admin" || user.role === "firm_owner" || user.role === "platform_admin";
   const grantedIds = new Set(access.map((a) => a.entityId));
   const ungranted = firmEntities.filter((e) => !grantedIds.has(e.id));
   const applicableModules = MODULE_DEFS.filter((d) => roleAllows(user.role, d.key as ModuleKey));
@@ -91,7 +92,7 @@ export default async function UserDetailPage({
             ) : (
               <div className="space-y-4">
                 {access.map((a) => {
-                  const perms = (a.permissions ?? {}) as Record<string, boolean>;
+                  const perms = (a.permissions ?? {}) as import("@/services/permissions").EntityPermissions;
                   return (
                     <form
                       key={a.entityId}
@@ -116,12 +117,11 @@ export default async function UserDetailPage({
                             key={def.key}
                             className="flex cursor-pointer items-start gap-2.5 rounded-md px-1 py-1.5 transition-colors duration-150 hover:bg-[var(--ink-50)]"
                           >
-                            <input
-                              type="checkbox"
-                              name={`perm_${def.key}`}
-                              defaultChecked={perms[def.key] === true}
-                              className="mt-0.5 h-4 w-4 shrink-0"
-                            />
+                            <select name={`perm_${def.key}`} className="select max-w-28" aria-label={`${def.label} capability`}
+                              defaultValue={perms[def.key] === true ? (user.role === "accountant_staff" ? "edit" : "view") : typeof perms[def.key] === "string" ? String(perms[def.key]) : "none"}>
+                              <option value="none">No access</option><option value="view">View</option>
+                              {user.role === "accountant_staff" && <option value="edit">Edit / post</option>}
+                            </select>
                             <span className="min-w-0">
                               <span className="block text-[0.8125rem] font-medium text-[var(--ink-800)]">
                                 {def.label}

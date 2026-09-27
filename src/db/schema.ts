@@ -831,3 +831,20 @@ export const bankTransactions = pgTable("bank_transactions", {
   reconciliationId: uuid("reconciliation_id").references(() => bankReconciliations.id),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+export const authRateLimits = pgTable("auth_rate_limits", {
+  key: text("key").primaryKey(),
+  attempts: integer("attempts").notNull().default(1),
+  windowStartedAt: timestamp("window_started_at", { withTimezone: true }).notNull().defaultNow(),
+});
+export const userSecurity = pgTable("user_security", {
+  userId: uuid("user_id").primaryKey().references(() => users.id, { onDelete: "cascade" }),
+  mfaSecret: text("mfa_secret"),
+  mfaEnabled: boolean("mfa_enabled").notNull().default(false),
+  lastTotpStep: bigint("last_totp_step", { mode: "number" }).notNull().default(-1),
+});
+export const passwordResetTokens = pgTable("password_reset_tokens", {
+  tokenHash: text("token_hash").primaryKey(),
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+});

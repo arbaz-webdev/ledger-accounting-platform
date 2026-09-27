@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { requireAccountant, assertEntityAccess } from "@/lib/auth";
-import { requireModule } from "@/services/permissions";
+import { requireModuleEdit as requireModule } from "@/services/permissions";
 import { createInvoiceDraft, postInvoice, deleteInvoiceDraft, InvoiceError } from "@/services/invoices";
 import { recordSettlement, SettlementError, type SettlementKind } from "@/services/settlements";
 import { createContact, setContactActive } from "@/services/contacts";

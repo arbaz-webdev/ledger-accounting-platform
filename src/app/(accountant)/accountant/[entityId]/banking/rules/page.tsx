@@ -1,5 +1,6 @@
 import { listRules } from "@/services/bank-rules";
 import { listAccounts } from "@/services/coa";
+import { allowsBankCategory } from "@/lib/account-policy";
 import { PageHeader, EmptyState } from "@/components/ui";
 import { IconRows, IconPlus } from "@/components/icons";
 import { createRuleAction, toggleRuleAction, deleteRuleAction } from "../actions";
@@ -26,7 +27,7 @@ export default async function RulesPage({
   const { error } = await searchParams;
 
   const [rules, accounts] = await Promise.all([listRules(entityId), listAccounts(entityId)]);
-  const categoryAccounts = accounts.filter((a) => a.isActive && a.subType !== "cash_and_bank");
+  const categoryAccounts = accounts.filter(allowsBankCategory);
 
   return (
     <div className="fade-up">

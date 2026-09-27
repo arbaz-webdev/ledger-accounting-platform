@@ -9,6 +9,8 @@ import {
   chartOfAccounts,
   entities,
   periods,
+  accountMappings,
+  fiscalYearCloses,
 } from "@/db/schema";
 import { writeAudit } from "@/services/audit";
 
@@ -22,7 +24,7 @@ import { writeAudit } from "@/services/audit";
 const moneyString = z
   .union([z.string(), z.number()])
   .transform((v) => new Decimal(v || 0))
-  .refine((d) => !d.isNegative(), "Amounts cannot be negative")
+  .refine((d) => d.isFinite() && !d.isNegative(), "Amounts must be finite and nonnegative")
   .refine((d) => d.decimalPlaces() <= 2, "Amounts cannot exceed 2 decimal places");
 
 export const jeLineSchema = z
@@ -35,7 +37,7 @@ export const jeLineSchema = z
     fxRate: z
       .union([z.string(), z.number()])
       .transform((v) => new Decimal(v || 1))
-      .refine((d) => d.isPositive(), "FX rate must be positive")
+      .refine((d) => d.isFinite() && d.isPositive(), "FX rate must be finite and positive")
       .optional(),
   })
   .refine(
@@ -49,7 +51,10 @@ export const jeLineSchema = z
 
 export const journalEntryInputSchema = z.object({
   entityId: z.string().uuid(),
-  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Date must be YYYY-MM-DD"),
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Date must be YYYY-MM-DD").refine(value => {
+    const date = new Date(`${value}T00:00:00Z`);
+    return Number.isFinite(date.getTime()) && date.toISOString().slice(0,10) === value;
+  }, "Date must be a valid calendar date"),
   description: z.string().min(1).max(1000),
   reference: z.string().max(200).optional(),
   sourceModule: z
@@ -91,8 +96,8 @@ async function validate(input: ParsedInput) {
   let totalCredit = new Decimal(0);
   for (const line of input.lines) {
     const rate = line.fxRate ?? new Decimal(1);
-    totalDebit = totalDebit.plus((line.debit ?? new Decimal(0)).times(rate));
-    totalCredit = totalCredit.plus((line.credit ?? new Decimal(0)).times(rate));
+    totalDebit = totalDebit.plus((line.debit ?? new Decimal(0)).times(rate).toDecimalPlaces(2));
+    totalCredit = totalCredit.plus((line.credit ?? new Decimal(0)).times(rate).toDecimalPlaces(2));
   }
   totalDebit = totalDebit.toDecimalPlaces(2);
   totalCredit = totalCredit.toDecimalPlaces(2);
@@ -113,12 +118,22 @@ async function validate(input: ParsedInput) {
       isActive: chartOfAccounts.isActive,
       number: chartOfAccounts.accountNumber,
       name: chartOfAccounts.name,
+      subType: chartOfAccounts.subType,
     })
     .from(chartOfAccounts)
     .where(
       and(eq(chartOfAccounts.entityId, input.entityId), inArray(chartOfAccounts.id, accountIds))
     );
   const found = new Map(accounts.map((a) => [a.id, a]));
+  if (input.sourceModule === "manual") {
+    const protectedRows = await db.select({ id: accountMappings.accountId }).from(accountMappings)
+      .where(and(eq(accountMappings.entityId, input.entityId),
+        inArray(accountMappings.key, ["ar_control", "ap_control", "retained_earnings"])));
+    const protectedIds = new Set(protectedRows.map(a => a.id));
+    if (accounts.some(a => protectedIds.has(a.id) || a.subType === "receivable" || a.subType === "payable" || a.number === "3200")) {
+      throw new JournalValidationError("Manual journals cannot post to AR/AP controls or retained earnings; use a document, opening-balance or approved correction workflow");
+    }
+  }
   for (const id of accountIds) {
     const acct = found.get(id);
     if (!acct) throw new JournalValidationError("One or more accounts do not exist for this entity");
@@ -184,6 +199,7 @@ export async function postJournalEntry(
   const { entity } = await validate(input);
 
   const run = async (tx: Tx) => {
+    await tx.select({ id: entities.id }).from(entities).where(eq(entities.id, input.entityId)).for("share");
     const numberRows = await tx.execute(
       sql`SELECT next_je_number(${input.entityId}::uuid) AS n`
     );
@@ -277,6 +293,7 @@ export async function postDraftJournalEntry(
   postedByUserId: string
 ): Promise<{ jeNumber: number }> {
   return withTransaction(async (tx) => {
+    await tx.select({ id: entities.id }).from(entities).where(eq(entities.id, entityId)).for("share");
     const jeRows = await tx
       .select()
       .from(journalEntries)
@@ -287,6 +304,9 @@ export async function postDraftJournalEntry(
     if (je.status !== "draft" && je.status !== "pending_approval") {
       throw new JournalValidationError(`Cannot post a ${je.status} entry`);
     }
+    const draftLines = await tx.select().from(journalEntryLines).where(eq(journalEntryLines.jeId, jeId));
+    await validate(journalEntryInputSchema.parse({ entityId, date: je.date, description: je.description,
+      sourceModule: je.sourceModule, lines: draftLines.map(l => ({ accountId: l.accountId, debit: l.debit, credit: l.credit, currency: l.currency, fxRate: l.fxRate })) }));
 
     const numberRows = await tx.execute(sql`SELECT next_je_number(${entityId}::uuid) AS n`);
     const jeNumber = Number((numberRows.rows[0] as { n: string | number }).n);
@@ -351,9 +371,11 @@ export async function voidJournalEntry(
   jeId: string,
   entityId: string,
   voidedByUserId: string,
-  voidDate?: string
+  voidDate?: string,
+  callerTx?: Tx
 ): Promise<{ reversalJeId: string; reversalJeNumber: number }> {
-  return withTransaction(async (tx) => {
+  const run = async (tx: Tx) => {
+    await tx.select({ id: entities.id }).from(entities).where(eq(entities.id, entityId)).for("share");
     const jeRows = await tx
       .select()
       .from(journalEntries)
@@ -363,6 +385,13 @@ export async function voidJournalEntry(
     if (!je) throw new JournalValidationError("Journal entry not found");
     if (je.status !== "posted") {
       throw new JournalValidationError(`Only posted entries can be voided (this one is ${je.status})`);
+    }
+    if (je.reversesJeId) throw new JournalValidationError("A reversal entry cannot itself be reversed");
+    if (!["manual", "system"].includes(je.sourceModule)) throw new JournalValidationError("Document and stock journals require a document-aware correction; they cannot be reversed here");
+    if (voidDate && voidDate < je.date) throw new JournalValidationError("Reversal date cannot precede the original entry");
+    if (!callerTx) {
+      const [close] = await tx.select({ id: fiscalYearCloses.id }).from(fiscalYearCloses).where(eq(fiscalYearCloses.jeId, jeId));
+      if (close) throw new JournalValidationError("Use the fiscal-year reopening workflow to reverse a closing entry");
     }
 
     const lines = await tx
@@ -424,5 +453,6 @@ export async function voidJournalEntry(
     });
 
     return { reversalJeId: reversal.id, reversalJeNumber: reversalNumber };
-  });
+  };
+  return callerTx ? run(callerTx) : withTransaction(run);
 }

@@ -2,9 +2,10 @@
 
 import { revalidatePath } from "next/cache";
 import { requireAccountant, assertEntityAccess } from "@/lib/auth";
-import { requireModule } from "@/services/permissions";
+import { requireModuleEdit as requireModule } from "@/services/permissions";
 import { createAccount, updateAccount, type AccountType } from "@/services/coa";
 import { isUniqueViolation } from "@/db/errors";
+import { reviewClassificationCorrection } from "@/services/coa";
 
 export type CoaFormState = { error?: string; ok?: boolean };
 
@@ -23,7 +24,7 @@ export async function createAccountAction(
   if (!accountNumber || !name || !type) return { error: "Number, name and type are required" };
 
   try {
-    await createAccount({ entityId, accountNumber, name, type }, user.id);
+    await createAccount({ entityId, accountNumber, name, type, subType: String(formData.get("subType") ?? "") || undefined }, user.id);
   } catch (err) {
     if (isUniqueViolation(err)) {
       return { error: `Account number ${accountNumber} already exists` };
@@ -44,4 +45,24 @@ export async function toggleAccountActiveAction(formData: FormData): Promise<voi
 
   await updateAccount(accountId, entityId, { isActive: makeActive }, user.id);
   revalidatePath(`/accountant/${entityId}/coa`);
+}
+
+export async function editAccountAction(_prev: CoaFormState, formData: FormData): Promise<CoaFormState> {
+  const user = await requireAccountant();
+  const entityId = String(formData.get("entityId"));
+  await assertEntityAccess(user, entityId);
+  await requireModule(user, entityId, "coa");
+  try {
+    const accountId = String(formData.get("accountId"));
+    if (formData.get("classificationReview") === "on") {
+      await requireModule(user, entityId, "admin");
+      if (formData.get("confirmed") !== "on") return { error: "Confirm the impact on historical presentation" };
+      await reviewClassificationCorrection(accountId, entityId, String(formData.get("reason") ?? ""), user.id);
+    } else {
+      await updateAccount(accountId, entityId, { name: String(formData.get("name") ?? "").trim() }, user.id);
+    }
+  } catch (error) { return { error: error instanceof Error ? error.message : "Account update failed" }; }
+  revalidatePath(`/accountant/${entityId}/coa`);
+  revalidatePath(`/accountant/${entityId}/reports`);
+  return { ok: true };
 }

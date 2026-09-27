@@ -144,69 +144,71 @@ export async function approveReconciliation(
   },
   userId: string
 ) {
-  const workspace = await getReconWorkspace(
-    input.entityId,
-    input.bankAccountId,
-    input.statementDate
-  );
-
-  const clearedSet = new Set(input.clearedTxnIds);
-  const outstanding = workspace.openItems
-    .filter((i) => !clearedSet.has(i.id))
-    .reduce((sum, i) => sum + parseCents(i.amount), 0n);
-  const cleared = workspace.openItems
-    .filter((i) => clearedSet.has(i.id))
-    .reduce((sum, i) => sum + parseCents(i.amount), 0n);
-
-  const book = parseCents(workspace.bookBalance);
-  const expected = book - outstanding;
-  const stated = parseCents(input.statementBalance);
-
-  if (stated !== expected) {
-    throw new ReconciliationError(
-      `Does not reconcile: statement says ${formatCents(stated)} but the books less outstanding items come to ${formatCents(expected)} (out by ${formatCents(stated - expected)}).`
+  return db.transaction(async (tx) => {
+    const workspace = await getReconWorkspace(
+      input.entityId,
+      input.bankAccountId,
+      input.statementDate
     );
-  }
 
-  const [recon] = await db
-    .insert(bankReconciliations)
-    .values({
-      entityId: input.entityId,
-      bankAccountId: input.bankAccountId,
-      statementDate: input.statementDate,
-      statementBalance: formatCents(stated),
-      bookBalance: formatCents(book),
-      clearedTotal: formatCents(cleared),
-      approvedBy: userId,
-    })
-    .returning();
+    const clearedSet = new Set(input.clearedTxnIds);
+    const outstanding = workspace.openItems
+      .filter((i) => !clearedSet.has(i.id))
+      .reduce((sum, i) => sum + parseCents(i.amount), 0n);
+    const cleared = workspace.openItems
+      .filter((i) => clearedSet.has(i.id))
+      .reduce((sum, i) => sum + parseCents(i.amount), 0n);
 
-  if (input.clearedTxnIds.length > 0) {
-    await db
-      .update(bankTransactions)
-      .set({ reconciliationId: recon.id })
-      .where(
-        and(
-          eq(bankTransactions.entityId, input.entityId),
-          inArray(bankTransactions.id, input.clearedTxnIds)
-        )
+    const book = parseCents(workspace.bookBalance);
+    const expected = book - outstanding;
+    const stated = parseCents(input.statementBalance);
+
+    if (stated !== expected) {
+      throw new ReconciliationError(
+        `Does not reconcile: statement says ${formatCents(stated)} but the books less outstanding items come to ${formatCents(expected)} (out by ${formatCents(stated - expected)}).`
       );
-  }
+    }
 
-  await writeAudit(db, {
-    entityId: input.entityId,
-    userId,
-    action: "BANK_RECONCILED",
-    tableName: "bank_reconciliations",
-    recordId: recon.id,
-    afterState: {
-      statementDate: input.statementDate,
-      statementBalance: formatCents(stated),
-      cleared: input.clearedTxnIds.length,
-    },
+    const [recon] = await tx
+      .insert(bankReconciliations)
+      .values({
+        entityId: input.entityId,
+        bankAccountId: input.bankAccountId,
+        statementDate: input.statementDate,
+        statementBalance: formatCents(stated),
+        bookBalance: formatCents(book),
+        clearedTotal: formatCents(cleared),
+        approvedBy: userId,
+      })
+      .returning();
+
+    if (input.clearedTxnIds.length > 0) {
+      await tx
+        .update(bankTransactions)
+        .set({ reconciliationId: recon.id })
+        .where(
+          and(
+            eq(bankTransactions.entityId, input.entityId),
+            inArray(bankTransactions.id, input.clearedTxnIds)
+          )
+        );
+    }
+
+    await writeAudit(tx, {
+      entityId: input.entityId,
+      userId,
+      action: "BANK_RECONCILED",
+      tableName: "bank_reconciliations",
+      recordId: recon.id,
+      afterState: {
+        statementDate: input.statementDate,
+        statementBalance: formatCents(stated),
+        cleared: input.clearedTxnIds.length,
+      },
+    });
+
+    return recon;
   });
-
-  return recon;
 }
 
 export async function listReconciliations(entityId: string) {

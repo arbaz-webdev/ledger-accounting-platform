@@ -3,6 +3,7 @@ import { and, asc, eq, sql } from "drizzle-orm";
 import { db, withTransaction } from "@/db";
 import { firms, plans, subscriptions, users, entities } from "@/db/schema";
 import { hashPassword } from "@/lib/auth";
+import { validatePassword } from "@/lib/security";
 import { DEFAULT_COA_TEMPLATE, seedDefaultCoa } from "@/services/coa";
 import { ensureYearPeriods } from "@/services/periods";
 import { seedDefaultMappings } from "@/services/mappings";
@@ -141,9 +142,7 @@ export async function provisionFirm(input: ProvisionFirmInput, actingUserId: str
   if (!input.ownerFullName.trim()) throw new FirmError("Owner name is required");
   const email = input.ownerEmail.trim().toLowerCase();
   if (!email.includes("@")) throw new FirmError("A valid owner email is required");
-  if (input.ownerPassword.length < 8) {
-    throw new FirmError("The owner's initial password must be at least 8 characters");
-  }
+  validatePassword(input.ownerPassword);
 
   const [plan] = await db.select().from(plans).where(eq(plans.id, input.planId));
   if (!plan) throw new FirmError("Plan not found");
@@ -202,16 +201,18 @@ export async function provisionFirm(input: ProvisionFirmInput, actingUserId: str
 }
 
 export async function setFirmActive(firmId: string, isActive: boolean, actingUserId: string) {
-  const [firm] = await db.select({ name: firms.name }).from(firms).where(eq(firms.id, firmId));
-  if (!firm) throw new FirmError("Firm not found");
+  return db.transaction(async (tx) => {
+    const [firm] = await tx.select({ name: firms.name }).from(firms).where(eq(firms.id, firmId));
+    if (!firm) throw new FirmError("Firm not found");
 
-  await db.update(firms).set({ isActive }).where(eq(firms.id, firmId));
-  await writeAudit(db, {
-    userId: actingUserId,
-    action: isActive ? "FIRM_REACTIVATED" : "FIRM_DEACTIVATED",
-    tableName: "firms",
-    recordId: firmId,
-    afterState: { name: firm.name, isActive },
+    await tx.update(firms).set({ isActive }).where(eq(firms.id, firmId));
+    await writeAudit(tx, {
+      userId: actingUserId,
+      action: isActive ? "FIRM_REACTIVATED" : "FIRM_DEACTIVATED",
+      tableName: "firms",
+      recordId: firmId,
+      afterState: { name: firm.name, isActive },
+  });
   });
 }
 
@@ -231,23 +232,25 @@ export async function updateFirmSettings(
   input: FirmSettingsInput,
   actingUserId: string
 ) {
-  if (!input.name.trim()) throw new FirmError("Firm name is required");
-  await db
-    .update(firms)
-    .set({
-      name: input.name.trim(),
-      legalName: input.legalName || null,
-      contactEmail: input.contactEmail || null,
-      contactPhone: input.contactPhone || null,
-    })
-    .where(eq(firms.id, firmId));
+  return db.transaction(async (tx) => {
+    if (!input.name.trim()) throw new FirmError("Firm name is required");
+    await tx
+      .update(firms)
+      .set({
+        name: input.name.trim(),
+        legalName: input.legalName || null,
+        contactEmail: input.contactEmail || null,
+        contactPhone: input.contactPhone || null,
+      })
+      .where(eq(firms.id, firmId));
 
-  await writeAudit(db, {
-    userId: actingUserId,
-    action: "FIRM_SETTINGS_UPDATED",
-    tableName: "firms",
-    recordId: firmId,
-    afterState: { name: input.name },
+    await writeAudit(tx, {
+      userId: actingUserId,
+      action: "FIRM_SETTINGS_UPDATED",
+      tableName: "firms",
+      recordId: firmId,
+      afterState: { name: input.name },
+  });
   });
 }
 
@@ -268,42 +271,45 @@ export async function createClient(
   input: CreateClientInput,
   actingUserId: string
 ) {
-  if (!input.name.trim()) throw new FirmError("Client name is required");
-  await assertCanAddEntity(firmId);
+  return db.transaction(async (tx) => {
+    if (!input.name.trim()) throw new FirmError("Client name is required");
+    await tx.execute(sql`SELECT id FROM firms WHERE id = ${firmId} FOR UPDATE`);
+    await assertCanAddEntity(firmId, tx);
 
-  const currency = (input.baseCurrency || "USD").toUpperCase();
-  if (!/^[A-Z]{3}$/.test(currency)) throw new FirmError("Currency must be a 3-letter code");
-  const fyMonth = Number(input.fiscalYearStartMonth) || 1;
-  if (fyMonth < 1 || fyMonth > 12) throw new FirmError("Fiscal year start month must be 1–12");
+    const currency = (input.baseCurrency || "USD").toUpperCase();
+    if (!/^[A-Z]{3}$/.test(currency)) throw new FirmError("Currency must be a 3-letter code");
+    const fyMonth = Number(input.fiscalYearStartMonth) || 1;
+    if (fyMonth < 1 || fyMonth > 12) throw new FirmError("Fiscal year start month must be 1–12");
 
-  const [entity] = await db
-    .insert(entities)
-    .values({
-      firmId,
-      name: input.name.trim(),
-      legalName: input.legalName || null,
-      baseCurrency: currency,
-      fiscalYearStartMonth: fyMonth,
-    })
-    .returning({ id: entities.id });
+    const [entity] = await tx
+      .insert(entities)
+      .values({
+        firmId,
+        name: input.name.trim(),
+        legalName: input.legalName || null,
+        baseCurrency: currency,
+        fiscalYearStartMonth: fyMonth,
+      })
+      .returning({ id: entities.id });
 
-  // Make the client immediately usable: default chart of accounts, this
-  // year's periods, and the account mappings every posting module resolves
-  // through. Each step is idempotent, so a retry can't duplicate anything.
-  await seedDefaultCoa(entity.id);
-  await ensureYearPeriods(entity.id, new Date().getFullYear());
-  await seedDefaultMappings(entity.id);
+    // Make the client immediately usable: default chart of accounts, this
+    // year's periods, and the account mappings every posting module resolves
+    // through. Each step is idempotent, so a retry can't duplicate anything.
+    await seedDefaultCoa(entity.id, tx);
+    await ensureYearPeriods(entity.id, new Date().getFullYear(), tx);
+    await seedDefaultMappings(entity.id, tx);
 
-  await writeAudit(db, {
-    entityId: entity.id,
-    userId: actingUserId,
-    action: "CLIENT_CREATED",
-    tableName: "entities",
-    recordId: entity.id,
-    afterState: { name: input.name.trim(), baseCurrency: currency, accounts: DEFAULT_COA_TEMPLATE.length },
+    await writeAudit(tx, {
+      entityId: entity.id,
+      userId: actingUserId,
+      action: "CLIENT_CREATED",
+      tableName: "entities",
+      recordId: entity.id,
+      afterState: { name: input.name.trim(), baseCurrency: currency, accounts: DEFAULT_COA_TEMPLATE.length },
   });
 
   return entity.id;
+  });
 }
 
 export async function listFirmClients(firmId: string) {
@@ -346,22 +352,25 @@ export async function setClientActive(
   isActive: boolean,
   actingUserId: string
 ) {
-  const [entity] = await db
-    .select({ name: entities.name })
-    .from(entities)
-    .where(and(eq(entities.id, entityId), eq(entities.firmId, firmId)));
-  if (!entity) throw new FirmError("Client not found in this firm");
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT id FROM firms WHERE id = ${firmId} FOR UPDATE`);
+    const [entity] = await tx
+      .select({ name: entities.name, isActive: entities.isActive })
+      .from(entities)
+      .where(and(eq(entities.id, entityId), eq(entities.firmId, firmId)));
+    if (!entity) throw new FirmError("Client not found in this firm");
 
-  if (isActive) await assertCanAddEntity(firmId);
+    if (isActive && !entity.isActive) await assertCanAddEntity(firmId, tx);
 
-  await db.update(entities).set({ isActive }).where(eq(entities.id, entityId));
-  await writeAudit(db, {
-    entityId,
-    userId: actingUserId,
-    action: isActive ? "CLIENT_REACTIVATED" : "CLIENT_ARCHIVED",
-    tableName: "entities",
-    recordId: entityId,
-    afterState: { name: entity.name, isActive },
+    await tx.update(entities).set({ isActive }).where(eq(entities.id, entityId));
+    await writeAudit(tx, {
+      entityId,
+      userId: actingUserId,
+      action: isActive ? "CLIENT_REACTIVATED" : "CLIENT_ARCHIVED",
+      tableName: "entities",
+      recordId: entityId,
+      afterState: { name: entity.name, isActive },
+  });
   });
 }
 
