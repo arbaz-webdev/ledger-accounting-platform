@@ -56,7 +56,7 @@ export function NewMemberForm({ atLimit }: { atLimit: boolean }) {
           {pending ? "Creating…" : "Add user"}
         </button>
         <span className="kbd-hint">
-          Business roles get the read-only client portal; accountant roles get the books.
+          Business admins can post invoices in the client portal; business staff and view-only users can review permitted records. Accountant roles use the full books.
         </span>
         {state.error && (
           <span className="text-[0.8125rem] text-[var(--negative)]">{state.error}</span>

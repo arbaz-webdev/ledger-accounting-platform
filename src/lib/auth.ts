@@ -25,13 +25,12 @@ export type UserRole =
  *   platform_admin              /platform    the software vendor
  *   firm_owner                  /firm        the subscribing accounting firm
  *   firm_admin, accountant_staff /accountant staff who keep the books
- *   business roles, view_only   /business    the firm's clients, read-only
+ *   business roles, view_only   /business    the firm's clients
  *
  * firm_owner also appears in ACCOUNTANT_ROLES: they own the practice, so they
  * may work in the books too — but their HOME is /firm.
  */
 export const ACCOUNTANT_ROLES: UserRole[] = [
-  "platform_admin",
   "firm_owner",
   "firm_admin",
   "accountant_staff",
@@ -159,7 +158,7 @@ export async function requireFirmOwner(): Promise<SessionUser & { firmId: string
 
 /**
  * Tenancy guard: throws unless the user can access the given entity.
- * firm_admin / platform_admin -> any entity of their firm (or all, for platform).
+ * firm_admin -> any entity of their firm.
  * Everyone else needs an explicit user_entity_access row.
  */
 export async function assertEntityAccess(user: SessionUser, entityId: string): Promise<void> {
@@ -170,9 +169,8 @@ export async function assertEntityAccess(user: SessionUser, entityId: string): P
   const entity = entityRows[0];
   if (!entity) throw new Error("Entity not found");
 
-  // Platform admins reach any firm's books for support (audit-logged by the
-  // support-access route, not here).
-  if (user.role === "platform_admin") return;
+  // The software platform administers subscriptions, not tenant books.
+  if (user.role === "platform_admin") throw new Error("Platform users cannot access tenant books");
   if (!entity.isActive) throw new Error("Access denied to this entity");
   // Whoever runs the firm reaches every client of that firm.
   if ((user.role === "firm_admin" || user.role === "firm_owner") && entity.firmId === user.firmId) {

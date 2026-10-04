@@ -6,7 +6,7 @@
 --   3. firm_admin,
 --      accountant_staff /accountant staff who keep the books
 --   4. business_*,
---      view_only        /business   the firm's clients, read-only
+--      view_only        /business   the firm's clients, with role-based access
 --
 -- Tenancy was already firm-scoped (users.firm_id, entities.firm_id); this
 -- migration adds the commercial layer on top: what a firm is entitled to.

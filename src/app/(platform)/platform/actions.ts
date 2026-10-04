@@ -10,8 +10,6 @@ import {
   type SubscriptionStatus,
 } from "@/services/subscriptions";
 import { createPlan, updatePlan, setPlanActive, PlanError } from "@/services/plans";
-import { writeAudit } from "@/services/audit";
-import { db } from "@/db";
 import { isUniqueViolation, dbErrorMessage } from "@/db/errors";
 
 export type FormState = { error?: string; ok?: string };
@@ -98,27 +96,6 @@ export async function setSubscriptionAction(formData: FormData): Promise<void> {
   }
   revalidatePath(base);
   redirect(base);
-}
-
-/**
- * Enter a firm's books for support. Recorded in the audit log so the access is
- * traceable — the user chose audit-logged support access over metadata-only.
- */
-export async function supportAccessAction(formData: FormData): Promise<void> {
-  const user = await requirePlatformAdmin();
-  const firmId = String(formData.get("firmId"));
-  const entityId = String(formData.get("entityId"));
-
-  await writeAudit(db, {
-    entityId,
-    userId: user.id,
-    action: "PLATFORM_SUPPORT_ACCESS",
-    tableName: "entities",
-    recordId: entityId,
-    afterState: { firmId, by: user.email, at: new Date().toISOString() },
-  });
-
-  redirect(`/accountant/${entityId}`);
 }
 
 // ---------------------------------------------------------------------------

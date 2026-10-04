@@ -44,6 +44,7 @@ export default async function PortalBalanceSheetPage({
             <button className="btn btn-secondary">Run</button>
           </form>
           <PrintButton />
+          <a className="btn btn-secondary" href={`/business/export/balance-sheet?asOf=${asOf}`}>Export CSV</a>
         </PageHeader>
 
         <div className="card mx-auto max-w-2xl overflow-hidden">

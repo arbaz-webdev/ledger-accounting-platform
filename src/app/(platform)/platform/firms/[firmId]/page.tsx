@@ -5,7 +5,7 @@ import { listPlans } from "@/services/plans";
 import { ROLE_LABEL } from "@/lib/roles";
 import { fmtDate, fmtMoney, todayIso } from "@/lib/format";
 import { PageHeader, StatCard } from "@/components/ui";
-import { setFirmActiveAction, setSubscriptionAction, supportAccessAction } from "../../actions";
+import { setFirmActiveAction, setSubscriptionAction } from "../../actions";
 
 const STATUS_BADGE: Record<string, string> = {
   active: "badge-posted",
@@ -123,7 +123,6 @@ export default async function FirmDetailPage({
                     <th>Client</th>
                     <th>Currency</th>
                     <th className="text-right">Status</th>
-                    <th className="text-right">Support</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -137,24 +136,11 @@ export default async function FirmDetailPage({
                           {e.isActive ? "active" : "archived"}
                         </span>
                       </td>
-                      <td className="text-right">
-                        <form action={supportAccessAction} className="inline">
-                          <input type="hidden" name="firmId" value={firm.id} />
-                          <input type="hidden" name="entityId" value={e.id} />
-                          <button className="btn btn-ghost btn-sm" title="Audit-logged support access">
-                            Open books →
-                          </button>
-                        </form>
-                      </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             )}
-            <p className="border-t border-[var(--ink-100)] px-5 py-2.5 text-[0.6875rem] text-[var(--ink-400)]">
-              Opening a client&apos;s books writes a PLATFORM_SUPPORT_ACCESS entry to their audit
-              trail, so the firm can always see when you looked.
-            </p>
           </div>
 
           <div className="card overflow-hidden">

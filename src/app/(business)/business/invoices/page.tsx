@@ -3,6 +3,7 @@ import { listInvoices } from "@/services/invoices";
 import { fmtDate, fmtMoney, todayIso } from "@/lib/format";
 import { PageHeader, EmptyState } from "@/components/ui";
 import { IconJournal } from "@/components/icons";
+import { hasModule } from "@/services/permissions";
 
 const STATUS_BADGE: Record<string, string> = {
   draft: "badge-draft",
@@ -12,8 +13,9 @@ const STATUS_BADGE: Record<string, string> = {
 };
 
 export default async function PortalInvoicesPage() {
-  const { entityId } = await guardPortal("sales");
-  const invoices = (await listInvoices(entityId)).filter((i) => i.status !== "draft");
+  const { entityId, user } = await guardPortal("sales");
+  const canEdit = await hasModule(user, entityId, "sales", "edit");
+  const invoices = (await listInvoices(entityId)).filter((i) => canEdit || i.status !== "draft");
   const today = todayIso();
   const outstanding = invoices.reduce((s, i) => s + Number(i.outstanding), 0);
 
@@ -23,14 +25,14 @@ export default async function PortalInvoicesPage() {
         <PageHeader
           title="Invoices"
           sub={`${invoices.length} issued · ${fmtMoney(outstanding)} still owed to you`}
-        />
+        >{canEdit && <a href="/business/invoices/new" className="btn btn-brand">New invoice</a>}</PageHeader>
 
         <div className="card overflow-x-auto">
           {invoices.length === 0 ? (
             <EmptyState
               icon={<IconJournal className="h-5 w-5" />}
               title="No invoices yet"
-              hint="Invoices your accountant posts will appear here."
+              hint="Create your first invoice to get started."
             />
           ) : (
             <table className="tbl">
@@ -50,7 +52,7 @@ export default async function PortalInvoicesPage() {
                   const overdue = Number(i.outstanding) > 0 && i.dueDate < today;
                   return (
                     <tr key={i.id}>
-                      <td className="acct font-medium text-[var(--ink-800)]">{i.invoiceNumber}</td>
+                      <td className="acct font-medium text-[var(--ink-800)]"><a href={`/business/invoices/${i.id}`} className="hover:underline">{i.invoiceNumber}</a></td>
                       <td>{i.customerName}</td>
                       <td className="whitespace-nowrap">{fmtDate(i.issueDate)}</td>
                       <td className="whitespace-nowrap">

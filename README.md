@@ -25,10 +25,10 @@ The product is a SaaS with four levels of user, each with its own portal:
 
 | Tier | Role | Portal | What they do |
 |---|---|---|---|
-| 1 | `platform_admin` | `/platform` | The software vendor: provisions firms, sets plans and subscriptions, audit-logged support access into any firm's books |
+| 1 | `platform_admin` | `/platform` | The software vendor: provisions firms and manages plans and subscriptions; cannot open tenant books |
 | 2 | `firm_owner` | `/firm` | The subscribing accounting firm: adds its own clients and staff (within plan limits), views its subscription |
 | 3 | `firm_admin`, `accountant_staff` | `/accountant` | Keeps the books for each client |
-| 4 | `business_admin`, `business_staff`, `view_only` | `/business` | The firm's clients: read-only window on their own numbers |
+| 4 | `business_admin`, `business_staff`, `view_only` | `/business` | Business owners can create and post invoices and bills, record payments and credits, and add contacts. Staff and view-only users can review permitted records. |
 
 A **subscription gate** runs on every firm-scoped portal: `suspended` / `cancelled`
 (or a deactivated firm) locks all of that firm's users out to `/suspended`;

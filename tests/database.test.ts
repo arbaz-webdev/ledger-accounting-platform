@@ -358,21 +358,29 @@ test("isolated PostgreSQL service regressions (never loads .env)", { timeout: 12
       assert.equal(before.total,"0.03"); assert.equal(before.tiesOut,true);
       assert.equal((await ageing.getArAgeing(f.id,"2026-01-31")).controlBalance,"0.00");
     });
-    await t.test("permission levels preserve legacy grants and cannot elevate customer or cross-firm access", async () => {
+    await t.test("permission levels allow business owners to post while protecting staff and cross-firm access", async () => {
       const f = await fixture("Capability guards");
       const permissions = await import("../src/services/permissions");
-      const staff = randomUUID(), customer = randomUUID();
-      await query("INSERT INTO users(id,email,password_hash,full_name,role,firm_id) VALUES($1,'cap-staff@test.invalid','unused','Staff','accountant_staff',$3),($2,'cap-customer@test.invalid','unused','Customer','business_admin',$3)",[staff,customer,firm]);
+      const staff = randomUUID(), customer = randomUUID(), firmAdmin = randomUUID();
+      await query("INSERT INTO users(id,email,password_hash,full_name,role,firm_id) VALUES($1,'cap-staff@test.invalid','unused','Staff','accountant_staff',$4),($2,'cap-customer@test.invalid','unused','Customer','business_admin',$4),($3,'cap-admin@test.invalid','unused','Firm admin','firm_admin',$4)",[staff,customer,firmAdmin,firm]);
       await query("INSERT INTO user_entity_access(user_id,entity_id,module_permissions) VALUES($1,$3,'{}'),($2,$3,'{}')",[staff,customer,f.id]);
-      await permissions.setEntityPermissions(staff,f.id,{sales:"view"},admin);
+      await permissions.setEntityPermissions(staff,f.id,{sales:"view"},firmAdmin);
       const user = {id:staff,firmId:firm,role:"accountant_staff" as const,email:"",fullName:""};
       assert.equal(await permissions.hasModule(user,f.id,"sales"),true);
       await assert.rejects(permissions.requireModuleEdit(user,f.id,"sales"));
-      await permissions.setEntityPermissions(staff,f.id,{sales:true},admin);
+      await permissions.setEntityPermissions(staff,f.id,{sales:true},firmAdmin);
       await permissions.requireModuleEdit(user,f.id,"sales");
       assert.equal(permissions.permissionAllows("business_admin","sales","approve","edit"),false);
-      await assert.rejects(permissions.setEntityPermissions(customer,f.id,{sales:"edit"},admin),/read-only/);
-      await assert.rejects(permissions.setEntityPermissions(staff,f.id,{sales:"approve"},admin),/Approval/);
+      assert.equal(permissions.permissionAllows("business_admin","sales",true,"edit"),true);
+      assert.equal(permissions.permissionAllows("business_admin","reports",true,"edit"),false);
+      assert.equal(permissions.permissionAllows("business_staff","sales",true,"edit"),false);
+      assert.equal(permissions.permissionAllows("view_only","sales",true,"edit"),false);
+      await permissions.setEntityPermissions(customer,f.id,{sales:"edit"},firmAdmin);
+      const businessOwner = {id:customer,firmId:firm,role:"business_admin" as const,email:"",fullName:""};
+      await permissions.requireModuleEdit(businessOwner,f.id,"sales");
+      await assert.rejects(permissions.setEntityPermissions(customer,f.id,{sales:"approve"},firmAdmin),/Approval/);
+      await assert.rejects(permissions.setEntityPermissions(staff,f.id,{sales:"approve"},firmAdmin),/Approval/);
+      await assert.rejects(permissions.setEntityPermissions(staff,f.id,{sales:true},admin),/administration denied/);
       await assert.rejects(permissions.setEntityPermissions(staff,f.id,{sales:true},customer),/administration denied/);
       const foreignFirm = randomUUID(), foreignAdmin = randomUUID();
       await query("INSERT INTO firms(id,name) VALUES($1,'Foreign permission firm')",[foreignFirm]);
@@ -459,6 +467,38 @@ test("isolated PostgreSQL service regressions (never loads .env)", { timeout: 12
           assert.equal(response.status,200,`${role} portal: ${output}`);
           assert.ok((await response.text()).length>500);
         }
+        for (const [path,title] of [["/business/cash-flow","Cash Flow"],["/business/ar-ageing","A/R Ageing"],["/business/ap-ageing","A/P Ageing"]]) {
+          const response = await request(path,"business_admin");
+          assert.equal(response.status,200,`${path}: ${output}`);
+          assert.ok((await response.text()).includes(title));
+          assert.equal((await request(path)).status,307);
+        }
+        const newInvoice = await request("/business/invoices/new","business_admin");
+        assert.equal(newInvoice.status,200);
+        assert.ok((await newInvoice.text()).includes("New invoice"));
+        for (const [path,title] of [["/business/bills/new","New bill"],["/business/contacts","Customers"],["/business/reports","Reports"]]) {
+          const response = await request(path,"business_admin");
+          assert.equal(response.status,200,`${path}: ${output}`);
+          assert.ok((await response.text()).includes(title));
+        }
+        assert.equal((await request("/business/invoices/new","accountant_staff")).status,307);
+        assert.equal((await request(`/accountant/${f.id}/sales`,"platform_admin")).status,307);
+        for (const name of ["profit-loss", "balance-sheet", "cash-flow", "ar-ageing", "ap-ageing"]) {
+          const path = `/business/export/${name}`;
+          const response = await request(path,"business_admin");
+          assert.equal(response.status,200,`${path}: ${output}`);
+          assert.match(response.headers.get("content-type") ?? "", /text\/csv/);
+          assert.ok((await response.text()).length > 10);
+          assert.equal((await request(path)).status,307);
+        }
+        await query("UPDATE user_entity_access SET module_permissions=jsonb_set(module_permissions,'{reports}','false'::jsonb) WHERE user_id=$1 AND entity_id=$2",[actorIds.get("business_admin"),f.id]);
+        for (const path of ["/business/cash-flow","/business/ar-ageing","/business/ap-ageing"]) {
+          const response = await request(path,"business_admin");
+          assert.equal(response.status,307);
+          assert.ok(response.headers.get("location")?.includes("/business?denied=reports"));
+        }
+        assert.equal((await request("/business/export/profit-loss","business_admin")).status,307);
+        await query("UPDATE user_entity_access SET module_permissions=jsonb_set(module_permissions,'{reports}','true'::jsonb) WHERE user_id=$1 AND entity_id=$2",[actorIds.get("business_admin"),f.id]);
         const anonymous = await request(`/accountant/${f.id}/coa`);
         assert.equal(anonymous.status,307); assert.ok(anonymous.headers.get("location")?.includes("/login"));
         const customer = await request(`/accountant/${f.id}/coa`,"business_admin");

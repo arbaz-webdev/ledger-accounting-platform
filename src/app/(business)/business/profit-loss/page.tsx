@@ -22,9 +22,9 @@ export default async function PortalProfitLossPage({
 }: {
   searchParams: Promise<{ from?: string; to?: string }>;
 }) {
-  const { entityId, entityName } = await guardPortal("reports");
+  const { entityId, entityName, fiscalYearStartMonth } = await guardPortal("reports");
   const sp = await searchParams;
-  const def = defaultFiscalRange(todayIso(), 1);
+  const def = defaultFiscalRange(todayIso(), fiscalYearStartMonth);
   const from = isDate(sp.from) ? sp.from! : def.from;
   const to = isDate(sp.to) ? sp.to! : def.to;
 
@@ -46,6 +46,7 @@ export default async function PortalProfitLossPage({
             <button className="btn btn-secondary">Run</button>
           </form>
           <PrintButton />
+          <a className="btn btn-secondary" href={`/business/export/profit-loss?from=${from}&to=${to}`}>Export CSV</a>
         </PageHeader>
 
         <div className="card mx-auto max-w-2xl overflow-hidden">

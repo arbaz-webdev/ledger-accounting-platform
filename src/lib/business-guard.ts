@@ -8,7 +8,7 @@ import { hasModule, allowedModules, type ModuleKey } from "@/services/permission
 import { firmAccessState } from "@/services/subscriptions";
 
 /**
- * The client portal is read-only and single-entity: a business user sees the
+ * The client portal is single-entity: a business user sees the
  * first entity they've been granted, and only the modules their permissions
  * allow. Same permission engine as the accountant side.
  */
@@ -18,6 +18,7 @@ export type PortalContext = {
   entityId: string;
   entityName: string;
   baseCurrency: string;
+  fiscalYearStartMonth: number;
   allowed: Set<ModuleKey>;
 };
 
@@ -29,6 +30,7 @@ export async function portalContext(): Promise<PortalContext> {
       id: entities.id,
       name: entities.name,
       baseCurrency: entities.baseCurrency,
+      fiscalYearStartMonth: entities.fiscalYearStartMonth,
     })
     .from(entities)
     .innerJoin(userEntityAccess, eq(userEntityAccess.entityId, entities.id))
@@ -51,6 +53,7 @@ export async function portalContext(): Promise<PortalContext> {
     entityId: row.id,
     entityName: row.name,
     baseCurrency: row.baseCurrency,
+    fiscalYearStartMonth: row.fiscalYearStartMonth,
     allowed: await allowedModules(user, row.id),
   };
 }

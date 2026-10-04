@@ -15,7 +15,7 @@ import type { SessionUser, UserRole } from "@/lib/auth";
  *              view_only user can never post, whatever the matrix says.
  *   2. MATRIX — per user, per entity, per module on/off.
  *
- * firm_admin / platform_admin bypass the matrix for their own firm's entities
+ * Firm administrators bypass the matrix for their own firm's entities
  * (they administer it), so an admin can never lock themselves out.
  */
 
@@ -43,7 +43,6 @@ export type ModuleDef = {
 };
 
 const ALL_ACCOUNTANT: UserRole[] = [
-  "platform_admin",
   "firm_owner",
   "firm_admin",
   "accountant_staff",
@@ -108,13 +107,13 @@ export const MODULE_DEFS: ModuleDef[] = [
     key: "periods",
     label: "Periods & close",
     hint: "Lock periods and run the year-end close.",
-    allowedRoles: ["platform_admin", "firm_owner", "firm_admin"],
+    allowedRoles: ["firm_owner", "firm_admin"],
   },
   {
     key: "admin",
     label: "Administration",
     hint: "Account mappings, FX rates, users and the audit trail.",
-    allowedRoles: ["platform_admin", "firm_owner", "firm_admin"],
+    allowedRoles: ["firm_owner", "firm_admin"],
   },
 ];
 
@@ -134,7 +133,7 @@ export class PermissionError extends Error {
 
 /** Admins administer the matrix, so it never applies to them. */
 function bypassesMatrix(role: UserRole): boolean {
-  return role === "platform_admin" || role === "firm_owner" || role === "firm_admin";
+  return role === "firm_owner" || role === "firm_admin";
 }
 
 export function roleAllows(role: UserRole, moduleKey: ModuleKey): boolean {
@@ -168,10 +167,12 @@ const CAPABILITY_RANK: Record<Capability, number> = { view: 1, edit: 2, approve:
 export function permissionAllows(role: UserRole, moduleKey: ModuleKey, grant: boolean | Capability | undefined, capability: Capability = "view") {
   if (!roleAllows(role, moduleKey)) return false;
   const accountant = ALL_ACCOUNTANT.includes(role);
-  if (capability !== "view" && !accountant) return false;
+  const businessOwner = role === "business_admin" && (moduleKey === "sales" || moduleKey === "purchases");
+  if (capability !== "view" && !accountant && !businessOwner) return false;
+  if (grant === "approve" && !bypassesMatrix(role)) return false;
   if (capability === "approve" && !bypassesMatrix(role)) return false;
   if (bypassesMatrix(role)) return true;
-  const effective = grant === true ? (accountant ? "edit" : "view") : grant;
+  const effective = grant === true ? (accountant || businessOwner ? "edit" : "view") : grant;
   return typeof effective === "string" && (CAPABILITY_RANK[effective] ?? 0) >= CAPABILITY_RANK[capability];
 }
 
@@ -251,7 +252,7 @@ export async function setEntityPermissions(
     const [target] = await tx.select().from(users).where(eq(users.id, targetUserId));
     const [entity] = await tx.select().from(entities).where(eq(entities.id, entityId));
     if (!actor || !target || !entity || !actor.isActive || !bypassesMatrix(actor.role as UserRole) ||
-      (actor.role !== "platform_admin" && (entity.firmId !== actor.firmId || target.firmId !== actor.firmId)) || target.firmId !== entity.firmId) {
+      entity.firmId !== actor.firmId || target.firmId !== actor.firmId || target.firmId !== entity.firmId) {
       throw new Error("Permission administration denied for this firm or entity");
     }
     const sanitised: EntityPermissions = {};
@@ -259,7 +260,7 @@ export async function setEntityPermissions(
       const grant = permissions[def.key] ?? false;
       if (!roleAllows(target.role as UserRole, def.key)) continue;
       if (![true, false, "view", "edit", "approve"].includes(grant)) throw new Error("Invalid permission capability");
-      if ((grant === "edit" || grant === "approve") && !ALL_ACCOUNTANT.includes(target.role as UserRole)) throw new Error("Customer roles are read-only");
+      if ((grant === "edit" || grant === "approve") && !ALL_ACCOUNTANT.includes(target.role as UserRole) && !(target.role === "business_admin" && (def.key === "sales" || def.key === "purchases"))) throw new Error("This role cannot edit transactions");
       if (grant === "approve" && !bypassesMatrix(target.role as UserRole)) throw new Error("Approval authority is restricted to firm administrators");
       sanitised[def.key] = grant;
     }

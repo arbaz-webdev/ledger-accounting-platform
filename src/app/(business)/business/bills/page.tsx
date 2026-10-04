@@ -3,6 +3,7 @@ import { listBills } from "@/services/bills";
 import { fmtDate, fmtMoney, todayIso } from "@/lib/format";
 import { PageHeader, EmptyState } from "@/components/ui";
 import { IconCash } from "@/components/icons";
+import { hasModule } from "@/services/permissions";
 
 const STATUS_BADGE: Record<string, string> = {
   draft: "badge-draft",
@@ -12,8 +13,9 @@ const STATUS_BADGE: Record<string, string> = {
 };
 
 export default async function PortalBillsPage() {
-  const { entityId } = await guardPortal("purchases");
-  const bills = (await listBills(entityId)).filter((b) => b.status !== "draft");
+  const { entityId, user } = await guardPortal("purchases");
+  const canEdit = await hasModule(user, entityId, "purchases", "edit");
+  const bills = (await listBills(entityId)).filter((b) => canEdit || b.status !== "draft");
   const today = todayIso();
   const outstanding = bills.reduce((s, b) => s + Number(b.outstanding), 0);
 
@@ -23,14 +25,14 @@ export default async function PortalBillsPage() {
         <PageHeader
           title="Bills"
           sub={`${bills.length} recorded · ${fmtMoney(outstanding)} still to pay`}
-        />
+        >{canEdit && <a href="/business/bills/new" className="btn btn-brand">New bill</a>}</PageHeader>
 
         <div className="card overflow-x-auto">
           {bills.length === 0 ? (
             <EmptyState
               icon={<IconCash className="h-5 w-5" />}
               title="No bills yet"
-              hint="Supplier bills your accountant posts will appear here."
+              hint="Create your first supplier bill to get started."
             />
           ) : (
             <table className="tbl">
@@ -50,7 +52,7 @@ export default async function PortalBillsPage() {
                   const overdue = Number(b.outstanding) > 0 && b.dueDate < today;
                   return (
                     <tr key={b.id}>
-                      <td className="acct font-medium text-[var(--ink-800)]">{b.billNumber}</td>
+                      <td className="acct font-medium text-[var(--ink-800)]"><a href={`/business/bills/${b.id}`} className="hover:underline">{b.billNumber}</a></td>
                       <td>{b.supplierName}</td>
                       <td className="whitespace-nowrap">{fmtDate(b.issueDate)}</td>
                       <td className="whitespace-nowrap">

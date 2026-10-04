@@ -118,9 +118,9 @@ export default async function UserDetailPage({
                             className="flex cursor-pointer items-start gap-2.5 rounded-md px-1 py-1.5 transition-colors duration-150 hover:bg-[var(--ink-50)]"
                           >
                             <select name={`perm_${def.key}`} className="select max-w-28" aria-label={`${def.label} capability`}
-                              defaultValue={perms[def.key] === true ? (user.role === "accountant_staff" ? "edit" : "view") : typeof perms[def.key] === "string" ? String(perms[def.key]) : "none"}>
+                              defaultValue={perms[def.key] === true ? (user.role === "accountant_staff" || (user.role === "business_admin" && (def.key === "sales" || def.key === "purchases")) ? "edit" : "view") : typeof perms[def.key] === "string" ? String(perms[def.key]) : "none"}>
                               <option value="none">No access</option><option value="view">View</option>
-                              {user.role === "accountant_staff" && <option value="edit">Edit / post</option>}
+                              {(user.role === "accountant_staff" || (user.role === "business_admin" && (def.key === "sales" || def.key === "purchases"))) && <option value="edit">Edit / post</option>}
                             </select>
                             <span className="min-w-0">
                               <span className="block text-[0.8125rem] font-medium text-[var(--ink-800)]">
