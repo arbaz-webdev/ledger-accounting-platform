@@ -59,12 +59,16 @@ export type ItemInput = {
   costingMethod: CostingMethod;
   unit?: string;
   salesPrice?: string | number;
+  isService?: boolean;
+  reorderLevel?: string | number;
 };
 
 export async function createItem(input: ItemInput, userId: string) {
   return db.transaction(async (tx) => {
     if (!input.sku.trim()) throw new InventoryError("SKU is required");
     if (!input.name.trim()) throw new InventoryError("Item name is required");
+    const reorder = new Decimal(input.reorderLevel ?? 0);
+    if (!reorder.isFinite() || reorder.isNegative()) throw new InventoryError("Reorder level must be zero or greater");
 
     const [item] = await tx
       .insert(inventoryItems)
@@ -76,6 +80,8 @@ export async function createItem(input: ItemInput, userId: string) {
         costingMethod: input.costingMethod,
         unit: input.unit?.trim() || "unit",
         salesPrice: String(input.salesPrice || 0),
+        isService: input.isService ?? false,
+        reorderLevel: reorder.toString(),
         createdBy: userId,
       })
       .returning();
@@ -164,7 +170,7 @@ export async function setItemActive(
 
 export async function listItems(entityId: string, opts?: { activeOnly?: boolean }) {
   const rows = await db.execute(sql`
-    SELECT i.id, i.sku, i.name, i.costing_method, i.unit, i.sales_price, i.is_active,
+    SELECT i.id, i.sku, i.name, i.costing_method, i.unit, i.sales_price, i.is_service, i.reorder_level, i.is_active,
            COALESCE(SUM(l.qty_remaining), 0)  AS qty_on_hand,
            COALESCE(SUM(l.cost_remaining), 0) AS value_on_hand
     FROM inventory_items i
@@ -182,6 +188,8 @@ export async function listItems(entityId: string, opts?: { activeOnly?: boolean 
       costing_method: CostingMethod;
       unit: string;
       sales_price: string;
+      is_service: boolean;
+      reorder_level: string;
       is_active: boolean;
       qty_on_hand: string;
       value_on_hand: string;
@@ -193,10 +201,24 @@ export async function listItems(entityId: string, opts?: { activeOnly?: boolean 
     costingMethod: r.costing_method,
     unit: r.unit,
     salesPrice: r.sales_price,
+    isService: r.is_service,
+    reorderLevel: r.reorder_level,
     isActive: r.is_active,
     qtyOnHand: r.qty_on_hand,
     valueOnHand: r.value_on_hand,
   }));
+}
+
+/** Most issued products in the last 30 days; services have no stock movement. */
+export async function getFastMovingItems(entityId: string) {
+  const result = await db.execute(sql`
+    SELECT i.sku, i.name, SUM(m.quantity) AS quantity
+    FROM inventory_movements m JOIN inventory_items i ON i.id=m.item_id
+    WHERE m.entity_id=${entityId} AND m.kind='issue'
+      AND m.date >= CURRENT_DATE - INTERVAL '30 days' AND i.is_service=false
+    GROUP BY i.id ORDER BY quantity DESC LIMIT 5
+  `);
+  return result.rows as { sku: string; name: string; quantity: string }[];
 }
 
 export async function getItem(itemId: string, entityId: string) {

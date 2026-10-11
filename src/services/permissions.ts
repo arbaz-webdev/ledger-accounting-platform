@@ -95,7 +95,7 @@ export const MODULE_DEFS: ModuleDef[] = [
     key: "inventory",
     label: "Inventory",
     hint: "Items, stock movements and valuation.",
-    allowedRoles: ALL_ACCOUNTANT,
+    allowedRoles: ACCOUNTANT_AND_BUSINESS,
   },
   {
     key: "reports",
@@ -167,7 +167,7 @@ const CAPABILITY_RANK: Record<Capability, number> = { view: 1, edit: 2, approve:
 export function permissionAllows(role: UserRole, moduleKey: ModuleKey, grant: boolean | Capability | undefined, capability: Capability = "view") {
   if (!roleAllows(role, moduleKey)) return false;
   const accountant = ALL_ACCOUNTANT.includes(role);
-  const businessOwner = role === "business_admin" && (moduleKey === "sales" || moduleKey === "purchases");
+  const businessOwner = role === "business_admin" && (moduleKey === "sales" || moduleKey === "purchases" || moduleKey === "inventory");
   if (capability !== "view" && !accountant && !businessOwner) return false;
   if (grant === "approve" && !bypassesMatrix(role)) return false;
   if (capability === "approve" && !bypassesMatrix(role)) return false;
@@ -260,7 +260,7 @@ export async function setEntityPermissions(
       const grant = permissions[def.key] ?? false;
       if (!roleAllows(target.role as UserRole, def.key)) continue;
       if (![true, false, "view", "edit", "approve"].includes(grant)) throw new Error("Invalid permission capability");
-      if ((grant === "edit" || grant === "approve") && !ALL_ACCOUNTANT.includes(target.role as UserRole) && !(target.role === "business_admin" && (def.key === "sales" || def.key === "purchases"))) throw new Error("This role cannot edit transactions");
+      if ((grant === "edit" || grant === "approve") && !ALL_ACCOUNTANT.includes(target.role as UserRole) && !(target.role === "business_admin" && (def.key === "sales" || def.key === "purchases" || def.key === "inventory"))) throw new Error("This role cannot edit transactions");
       if (grant === "approve" && !bypassesMatrix(target.role as UserRole)) throw new Error("Approval authority is restricted to firm administrators");
       sanitised[def.key] = grant;
     }

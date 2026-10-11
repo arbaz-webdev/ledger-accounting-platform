@@ -1,10 +1,10 @@
 import "server-only";
 import Decimal from "decimal.js";
 import { calculateDocumentLine } from "@/lib/document-math";
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { db } from "@/db";
-import { bills, billLines, contacts, chartOfAccounts, settlements } from "@/db/schema";
-import { postJournalEntry } from "@/services/journal";
+import { bills, billLines, contacts, chartOfAccounts, settlements, inventoryItems, businessSettings } from "@/db/schema";
+import { postJournalEntry, voidJournalEntry } from "@/services/journal";
 import { resolveMapping, getMappings } from "@/services/mappings";
 import { writeAudit } from "@/services/audit";
 import { assertPostingAccount } from "@/services/account-policy";
@@ -83,7 +83,8 @@ export async function createBillDraft(input: CreateBillInput, userId: string) {
       sql`SELECT next_document_number(${input.entityId}::uuid, 'bill') AS n`
     );
     const seq = Number((numRows.rows[0] as { n: string | number }).n);
-    const billNumber = `BILL-${String(seq).padStart(4, "0")}`;
+    const [numbering] = await tx.select({ prefix: businessSettings.billPrefix }).from(businessSettings).where(eq(businessSettings.entityId, input.entityId));
+    const billNumber = `${numbering?.prefix ?? "BILL"}-${String(seq).padStart(4, "0")}`;
 
     const [bill] = await tx
       .insert(bills)
@@ -159,6 +160,14 @@ export async function postBill(billId: string, entityId: string, userId: string)
     // Item lines debit Inventory (creating a cost layer); the rest debit their
     // chosen expense account.
     const itemLines = lines.filter((l) => l.itemId);
+    const itemIds = [...new Set(itemLines.map((line) => line.itemId!))];
+    if (itemIds.length) {
+      const catalog = await tx.select({ id: inventoryItems.id, isService: inventoryItems.isService })
+        .from(inventoryItems).where(and(eq(inventoryItems.entityId, entityId), inArray(inventoryItems.id, itemIds)));
+      if (catalog.length !== itemIds.length || catalog.some((item) => item.isService)) {
+        throw new BillError("A bill stock line must name a product belonging to this business");
+      }
+    }
     const expenseByAccount = new Map<string, Decimal>();
     let inventoryTotal = new Decimal(0);
     for (const l of lines) {
@@ -290,6 +299,42 @@ export async function deleteBillDraft(billId: string, entityId: string, userId: 
   });
 }
 
+export async function voidBill(billId: string, entityId: string, userId: string, voidDate: string) {
+  return db.transaction(async (tx) => {
+    const [bill] = await tx.select().from(bills)
+      .where(and(eq(bills.id, billId), eq(bills.entityId, entityId))).for("update");
+    if (!bill || !bill.jeId) throw new BillError("Posted bill not found");
+    if (bill.status !== "posted") throw new BillError("Only an open posted bill can be voided");
+    const linked = await tx.select({ id: settlements.id }).from(settlements).where(eq(settlements.billId, billId)).limit(1);
+    if (linked.length) throw new BillError("Unapply settlements before voiding this bill");
+    const lines = await tx.select({ itemId: billLines.itemId }).from(billLines).where(eq(billLines.billId, billId));
+    if (lines.some((line) => line.itemId)) throw new BillError("Inventory bills need stock reversal before voiding");
+    const reversal = await voidJournalEntry(bill.jeId, entityId, userId, voidDate, tx, "bill");
+    await tx.update(bills).set({ status: "void" }).where(eq(bills.id, billId));
+    await writeAudit(tx, { entityId, userId, action: "BILL_VOIDED", tableName: "bills", recordId: billId,
+      beforeState: { status: bill.status }, afterState: { status: "void", reversalJeId: reversal.reversalJeId, voidDate } });
+    return reversal;
+  });
+}
+
+export async function updateBillMetadata(billId: string, entityId: string, userId: string, input: {
+  dueDate: string; notes: string; supplierReference: string;
+}) {
+  return db.transaction(async (tx) => {
+    const [bill] = await tx.select().from(bills)
+      .where(and(eq(bills.id, billId), eq(bills.entityId, entityId))).for("update");
+    if (!bill || bill.status === "void") throw new BillError("Editable bill not found");
+    const parsed = new Date(`${input.dueDate}T00:00:00Z`);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(input.dueDate) || !Number.isFinite(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== input.dueDate || input.dueDate < bill.issueDate) {
+      throw new BillError("Due date must be a valid date on or after the issue date");
+    }
+    const after = { dueDate: input.dueDate, notes: input.notes.trim().slice(0, 4000), supplierReference: input.supplierReference.trim().slice(0, 160) };
+    await tx.update(bills).set(after).where(eq(bills.id, billId));
+    await writeAudit(tx, { entityId, userId, action: "BILL_METADATA_UPDATED", tableName: "bills", recordId: billId,
+      beforeState: { dueDate: bill.dueDate, notes: bill.notes, supplierReference: bill.supplierReference }, afterState: after });
+  });
+}
+
 export async function listBills(entityId: string) {
   const rows = await db.execute(sql`
     SELECT b.id, b.bill_number, b.supplier_reference, b.issue_date, b.due_date, b.status, b.total,
@@ -323,7 +368,7 @@ export async function listBills(entityId: string) {
     supplierName: r.supplier_name,
     total: r.total,
     settled: r.settled,
-    outstanding: new Decimal(r.total).minus(new Decimal(r.settled)).toFixed(2),
+    outstanding: r.status === "void" ? "0.00" : new Decimal(r.total).minus(new Decimal(r.settled)).toFixed(2),
   }));
 }
 
@@ -345,6 +390,7 @@ export async function getBill(billId: string, entityId: string) {
       taxRate: billLines.taxRate,
       netAmount: billLines.netAmount,
       taxAmount: billLines.taxAmount,
+      itemId: billLines.itemId,
       accountNumber: chartOfAccounts.accountNumber,
       accountName: chartOfAccounts.name,
     })
@@ -360,7 +406,7 @@ export async function getBill(billId: string, entityId: string) {
     .orderBy(desc(settlements.date));
 
   const settled = settlementRows.reduce((s, r) => s.plus(new Decimal(r.amount)), new Decimal(0));
-  const outstanding = new Decimal(bill.total).minus(settled);
+  const outstanding = bill.status === "void" ? new Decimal(0) : new Decimal(bill.total).minus(settled);
 
   return {
     bill,

@@ -6,7 +6,7 @@ import { listCashBankAccounts } from "@/services/coa";
 import { resolveMapping } from "@/services/mappings";
 import { fmtDate, fmtMoney, todayIso } from "@/lib/format";
 import { PageHeader } from "@/components/ui";
-import { postBusinessBillAction, discardBusinessBillAction, settleBusinessBillAction } from "../actions";
+import { postBusinessBillAction, discardBusinessBillAction, settleBusinessBillAction, updateBusinessBillMetadataAction, voidBusinessBillAction } from "../actions";
 
 export default async function BusinessBillPage({ params, searchParams }: {
   params: Promise<{ billId: string }>;
@@ -53,5 +53,20 @@ export default async function BusinessBillPage({ params, searchParams }: {
         <button className="btn btn-brand w-full">Record</button>
       </form>}
     </div>
+    {canEdit && bill.status !== "void" && <section className="card mt-6 p-4">
+      <h2 className="mb-3 text-sm font-semibold">Bill details</h2>
+      <form action={updateBusinessBillMetadataAction} className="grid gap-3 sm:grid-cols-2">
+        <input type="hidden" name="entityId" value={ctx.entityId} /><input type="hidden" name="billId" value={bill.id} />
+        <label className="block"><span className="field-label">Due date</span><input name="dueDate" type="date" min={bill.issueDate} required defaultValue={bill.dueDate} className="input" /></label>
+        <label className="block"><span className="field-label">Supplier reference</span><input name="supplierReference" maxLength={160} defaultValue={bill.supplierReference ?? ""} className="input" /></label>
+        <label className="block sm:col-span-2"><span className="field-label">Notes</span><textarea name="notes" maxLength={4000} defaultValue={bill.notes ?? ""} className="input min-h-24" /></label>
+        <button className="btn btn-secondary sm:col-span-2">Save details</button>
+      </form>
+    </section>}
+    {canEdit && bill.status === "posted" && settlements.length === 0 && !lines.some((line) => line.itemId) && <form action={voidBusinessBillAction} className="card mt-6 flex flex-wrap items-end gap-3 p-4">
+      <input type="hidden" name="entityId" value={ctx.entityId} /><input type="hidden" name="billId" value={bill.id} />
+      <label><span className="field-label">Reversal date</span><input name="voidDate" type="date" min={bill.issueDate} required defaultValue={todayIso()} className="input" /></label>
+      <button className="btn btn-secondary">Void bill with reversal</button>
+    </form>}
   </main>;
 }

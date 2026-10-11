@@ -17,12 +17,12 @@ type LineDraft = {
   itemId: string;
 };
 
-const emptyLine = (): LineDraft => ({
+const emptyLine = (taxRate = "0"): LineDraft => ({
   description: "",
   quantity: "1",
   unitPrice: "",
   accountId: "",
-  taxRate: "0",
+  taxRate,
   itemId: "",
 });
 
@@ -49,6 +49,8 @@ export function DocumentForm({
   inventoryAccountId,
   baseCurrency,
   currencies,
+  defaultTaxRate = "0",
+  defaultNotes = "",
   onSubmit,
 }: {
   entityId: string;
@@ -62,6 +64,8 @@ export function DocumentForm({
   baseCurrency: string;
   /** currencies with a rate on file, base first */
   currencies: string[];
+  defaultTaxRate?: string;
+  defaultNotes?: string;
   onSubmit: (payload: {
     entityId: string;
     contactId: string;
@@ -83,9 +87,9 @@ export function DocumentForm({
   const [issueDate, setIssueDate] = useState(today);
   const [dueDate, setDueDate] = useState(addDays(today, 30));
   const [supplierReference, setSupplierReference] = useState("");
-  const [notes, setNotes] = useState("");
+  const [notes, setNotes] = useState(defaultNotes);
   const [currency, setCurrency] = useState(baseCurrency);
-  const [lines, setLines] = useState<LineDraft[]>([emptyLine()]);
+  const [lines, setLines] = useState<LineDraft[]>([emptyLine(defaultTaxRate)]);
   const [error, setError] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
 
@@ -335,7 +339,7 @@ export function DocumentForm({
       <div className="flex flex-wrap items-start justify-between gap-4 border-t border-[var(--ink-100)] p-4">
         <button
           type="button"
-          onClick={() => setLines((prev) => [...prev, emptyLine()])}
+          onClick={() => setLines((prev) => [...prev, emptyLine(defaultTaxRate)])}
           className="btn btn-ghost btn-sm -ml-2"
         >
           <IconPlus className="h-3.5 w-3.5" />

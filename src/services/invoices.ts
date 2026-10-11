@@ -1,10 +1,10 @@
 import "server-only";
 import Decimal from "decimal.js";
 import { calculateDocumentLine } from "@/lib/document-math";
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { db } from "@/db";
-import { invoices, invoiceLines, contacts, chartOfAccounts, settlements } from "@/db/schema";
-import { postJournalEntry } from "@/services/journal";
+import { invoices, invoiceLines, contacts, chartOfAccounts, settlements, inventoryItems, inventoryMovements, businessSettings } from "@/db/schema";
+import { postJournalEntry, voidJournalEntry } from "@/services/journal";
 import { resolveMapping, getMappings } from "@/services/mappings";
 import { writeAudit } from "@/services/audit";
 import {
@@ -86,7 +86,8 @@ export async function createInvoiceDraft(input: CreateInvoiceInput, userId: stri
       sql`SELECT next_document_number(${input.entityId}::uuid, 'invoice') AS n`
     );
     const seq = Number((numRows.rows[0] as { n: string | number }).n);
-    const invoiceNumber = `INV-${String(seq).padStart(4, "0")}`;
+    const [numbering] = await tx.select({ prefix: businessSettings.invoicePrefix }).from(businessSettings).where(eq(businessSettings.entityId, input.entityId));
+    const invoiceNumber = `${numbering?.prefix ?? "INV"}-${String(seq).padStart(4, "0")}`;
 
     const [invoice] = await tx
       .insert(invoices)
@@ -167,10 +168,16 @@ export async function postInvoice(invoiceId: string, entityId: string, userId: s
     }
     const taxTotal = new Decimal(invoice.taxTotal);
 
+    // Service catalog lines carry a price but never consume stock.
+    const itemIds = [...new Set(lines.flatMap((line) => line.itemId ? [line.itemId] : []))];
+    const catalog = itemIds.length ? await tx.select({ id: inventoryItems.id, isService: inventoryItems.isService })
+      .from(inventoryItems).where(and(eq(inventoryItems.entityId, entityId), inArray(inventoryItems.id, itemIds))) : [];
+    if (catalog.length !== itemIds.length) throw new InvoiceError("One or more items do not belong to this business");
+    const serviceIds = new Set(catalog.filter((item) => item.isService).map((item) => item.id));
     // Inventory lines: total quantity sold per item
     const qtyByItem = new Map<string, Decimal>();
     for (const l of lines) {
-      if (!l.itemId) continue;
+      if (!l.itemId || serviceIds.has(l.itemId)) continue;
       const prev = qtyByItem.get(l.itemId) ?? new Decimal(0);
       qtyByItem.set(l.itemId, prev.plus(new Decimal(l.quantity)));
     }
@@ -295,6 +302,43 @@ export async function deleteInvoiceDraft(invoiceId: string, entityId: string, us
   });
 }
 
+/** Preserve the document and its original posting; reverse it in an open period. */
+export async function voidInvoice(invoiceId: string, entityId: string, userId: string, voidDate: string) {
+  return db.transaction(async (tx) => {
+    const [invoice] = await tx.select().from(invoices)
+      .where(and(eq(invoices.id, invoiceId), eq(invoices.entityId, entityId))).for("update");
+    if (!invoice || !invoice.jeId) throw new InvoiceError("Posted invoice not found");
+    if (invoice.status !== "posted") throw new InvoiceError("Only an open posted invoice can be voided");
+    const linked = await tx.select({ id: settlements.id }).from(settlements).where(eq(settlements.invoiceId, invoiceId)).limit(1);
+    if (linked.length) throw new InvoiceError("Unapply settlements before voiding this invoice");
+    const stock = await tx.select({ id: inventoryMovements.id }).from(inventoryMovements).where(eq(inventoryMovements.invoiceId, invoiceId)).limit(1);
+    if (stock.length) throw new InvoiceError("Inventory invoices need stock reversal before voiding");
+    const reversal = await voidJournalEntry(invoice.jeId, entityId, userId, voidDate, tx, "invoice");
+    await tx.update(invoices).set({ status: "void" }).where(eq(invoices.id, invoiceId));
+    await writeAudit(tx, { entityId, userId, action: "INVOICE_VOIDED", tableName: "invoices", recordId: invoiceId,
+      beforeState: { status: invoice.status }, afterState: { status: "void", reversalJeId: reversal.reversalJeId, voidDate } });
+    return reversal;
+  });
+}
+
+export async function updateInvoiceMetadata(invoiceId: string, entityId: string, userId: string, input: {
+  dueDate: string; notes: string; purchaseOrderReference: string;
+}) {
+  return db.transaction(async (tx) => {
+    const [invoice] = await tx.select().from(invoices)
+      .where(and(eq(invoices.id, invoiceId), eq(invoices.entityId, entityId))).for("update");
+    if (!invoice || invoice.status === "void") throw new InvoiceError("Editable invoice not found");
+    const parsed = new Date(`${input.dueDate}T00:00:00Z`);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(input.dueDate) || !Number.isFinite(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== input.dueDate || input.dueDate < invoice.issueDate) {
+      throw new InvoiceError("Due date must be a valid date on or after the issue date");
+    }
+    const after = { dueDate: input.dueDate, notes: input.notes.trim().slice(0, 4000), purchaseOrderReference: input.purchaseOrderReference.trim().slice(0, 160) };
+    await tx.update(invoices).set(after).where(eq(invoices.id, invoiceId));
+    await writeAudit(tx, { entityId, userId, action: "INVOICE_METADATA_UPDATED", tableName: "invoices", recordId: invoiceId,
+      beforeState: { dueDate: invoice.dueDate, notes: invoice.notes, purchaseOrderReference: invoice.purchaseOrderReference }, afterState: after });
+  });
+}
+
 /** Invoice list with live outstanding balance. */
 export async function listInvoices(entityId: string) {
   const rows = await db.execute(sql`
@@ -327,7 +371,7 @@ export async function listInvoices(entityId: string) {
     customerName: r.customer_name,
     total: r.total,
     settled: r.settled,
-    outstanding: new Decimal(r.total).minus(new Decimal(r.settled)).toFixed(2),
+    outstanding: r.status === "void" ? "0.00" : new Decimal(r.total).minus(new Decimal(r.settled)).toFixed(2),
   }));
 }
 
@@ -349,11 +393,14 @@ export async function getInvoice(invoiceId: string, entityId: string) {
       taxRate: invoiceLines.taxRate,
       netAmount: invoiceLines.netAmount,
       taxAmount: invoiceLines.taxAmount,
+      itemId: invoiceLines.itemId,
+      itemIsService: inventoryItems.isService,
       accountNumber: chartOfAccounts.accountNumber,
       accountName: chartOfAccounts.name,
     })
     .from(invoiceLines)
     .innerJoin(chartOfAccounts, eq(invoiceLines.revenueAccountId, chartOfAccounts.id))
+    .leftJoin(inventoryItems, eq(invoiceLines.itemId, inventoryItems.id))
     .where(eq(invoiceLines.invoiceId, invoiceId))
     .orderBy(invoiceLines.lineNo);
 
@@ -364,7 +411,7 @@ export async function getInvoice(invoiceId: string, entityId: string) {
     .orderBy(desc(settlements.date));
 
   const settled = settlementRows.reduce((s, r) => s.plus(new Decimal(r.amount)), new Decimal(0));
-  const outstanding = new Decimal(invoice.total).minus(settled);
+  const outstanding = invoice.status === "void" ? new Decimal(0) : new Decimal(invoice.total).minus(settled);
 
   return {
     invoice,

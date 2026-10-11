@@ -5,6 +5,7 @@ import { listContacts } from "@/services/contacts";
 import { listAccounts } from "@/services/coa";
 import { listItems } from "@/services/inventory";
 import { listEntityCurrencies } from "@/services/fx";
+import { getBusinessSettings } from "@/services/business-settings";
 import { resolveMapping } from "@/services/mappings";
 import { allowsBillCoding } from "@/lib/account-policy";
 import { PageHeader, EmptyState } from "@/components/ui";
@@ -15,12 +16,13 @@ export default async function NewBusinessBillPage() {
   const ctx = await portalContext();
   if (!(await hasModule(ctx.user, ctx.entityId, "purchases", "edit"))) redirect("/business?denied=purchases");
   const { entityId } = ctx;
-  const [suppliers, accounts, items, currencies, inventoryAccountId] = await Promise.all([
+  const [suppliers, accounts, items, currencies, inventoryAccountId, settings] = await Promise.all([
     listContacts(entityId, "supplier"),
     listAccounts(entityId),
     listItems(entityId, { activeOnly: true }),
     listEntityCurrencies(entityId),
     resolveMapping(entityId, "inventory_asset").catch(() => undefined),
+    getBusinessSettings(entityId),
   ]);
   const activeSuppliers = suppliers.filter((supplier) => supplier.isActive);
   return <main className="mx-auto max-w-6xl px-6 py-8">
@@ -35,10 +37,11 @@ export default async function NewBusinessBillPage() {
       suppliers={activeSuppliers.map((supplier) => ({ id: supplier.id, label: supplier.name }))}
       contactTerms={Object.fromEntries(activeSuppliers.map((supplier) => [supplier.id, supplier.paymentTermsDays]))}
       accounts={accounts.filter(allowsBillCoding).map((account) => ({ id: account.id, label: `${account.accountNumber} — ${account.name}` }))}
-      items={items.map((item) => ({ id: item.id, label: `${item.sku} — ${item.name}`, salesPrice: item.salesPrice }))}
+      items={items.filter((item) => !item.isService).map((item) => ({ id: item.id, label: `${item.sku} — ${item.name}`, salesPrice: item.salesPrice }))}
       baseCurrency={ctx.baseCurrency}
       currencies={currencies}
       inventoryAccountId={inventoryAccountId}
+      defaultTaxRate={settings.defaultTaxRate}
     />}
   </main>;
 }

@@ -1,5 +1,6 @@
 import { guardPortal } from "@/lib/business-guard";
 import { PageHeader } from "@/components/ui";
+import { PORTAL_REPORTS } from "@/services/portal-report-catalog";
 
 const REPORTS = [
   { href: "/business/profit-loss", title: "Profit & Loss", description: "Revenue, cost of goods sold, expenses and net result." },
@@ -11,9 +12,12 @@ const REPORTS = [
 
 export default async function BusinessReportsPage() {
   const { allowed } = await guardPortal("reports");
-  const reports = REPORTS.filter((report) =>
+  const reports = [...REPORTS, ...Object.entries(PORTAL_REPORTS).map(([slug, item]) => ({ href: `/business/reports/${slug}`, title: item.title, description: item.description }))].filter((report) =>
     report.href.includes("ar-ageing") ? allowed.has("sales") :
-    report.href.includes("ap-ageing") ? allowed.has("purchases") : true
+    report.href.includes("ap-ageing") ? allowed.has("purchases") :
+    report.href.includes("inventory-valuation") ? allowed.has("inventory") :
+    report.href.includes("sales-by-customer") ? allowed.has("sales") :
+    report.href.includes("purchases-by-vendor") ? allowed.has("purchases") : true
   );
   return <main className="mx-auto max-w-6xl px-6 py-8">
     <PageHeader title="Reports" sub="Choose a statement or an outstanding balance report." />

@@ -65,7 +65,7 @@ export default async function NewBillPage({
           id: a.id,
           label: `${a.accountNumber} — ${a.name}`,
         }))}
-        items={items.map((it) => ({
+        items={items.filter((it) => !it.isService).map((it) => ({
           id: it.id,
           label: `${it.sku} — ${it.name}`,
           salesPrice: it.salesPrice,

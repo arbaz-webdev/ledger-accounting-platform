@@ -140,6 +140,72 @@ test("isolated PostgreSQL service regressions (never loads .env)", { timeout: 12
         assert.equal((await query("SELECT status FROM invoices WHERE id=$1", [invoice.id])).rows[0].status, "posted");
       } finally { await query("DROP TRIGGER reject_test_audit ON audit_log"); }
     });
+    await t.test("document metadata edits preserve amounts and voiding reverses open documents", async () => {
+      const f = await fixture("Document correction client");
+      const contacts = await import("../src/services/contacts");
+      const invoices = await import("../src/services/invoices");
+      const bills = await import("../src/services/bills");
+      const customer = await contacts.createContact({ entityId:f.id,type:"customer",name:"Correction buyer" },admin);
+      const supplier = await contacts.createContact({ entityId:f.id,type:"supplier",name:"Correction vendor" },admin);
+      const date = new Date().toISOString().slice(0,10);
+      const invoice = await invoices.createInvoiceDraft({entityId:f.id,customerId:customer.id,issueDate:date,dueDate:date,
+        lines:[{description:"Service",quantity:"1",unitPrice:"100",revenueAccountId:f.account("4000")}]},admin);
+      const bill = await bills.createBillDraft({entityId:f.id,supplierId:supplier.id,issueDate:date,dueDate:date,
+        lines:[{description:"Rent",quantity:"1",unitPrice:"40",expenseAccountId:f.account("6100")}]},admin);
+      await invoices.postInvoice(invoice.id,f.id,admin);
+      await bills.postBill(bill.id,f.id,admin);
+      await invoices.updateInvoiceMetadata(invoice.id,f.id,admin,{dueDate:date,notes:"Follow up",purchaseOrderReference:"PO-42"});
+      await bills.updateBillMetadata(bill.id,f.id,admin,{dueDate:date,notes:"Rent note",supplierReference:"V-42"});
+      assert.equal((await invoices.getInvoice(invoice.id,f.id))?.invoice.total,"100.00");
+      assert.equal((await invoices.getInvoice(invoice.id,f.id))?.invoice.purchaseOrderReference,"PO-42");
+      assert.equal((await bills.getBill(bill.id,f.id))?.bill.supplierReference,"V-42");
+      const invReversal = await invoices.voidInvoice(invoice.id,f.id,admin,date);
+      const billReversal = await bills.voidBill(bill.id,f.id,admin,date);
+      assert.equal((await invoices.getInvoice(invoice.id,f.id))?.outstanding,"0.00");
+      assert.equal((await bills.getBill(bill.id,f.id))?.outstanding,"0.00");
+      assert.equal((await query("SELECT status FROM journal_entries WHERE id=$1",[invReversal.reversalJeId])).rows[0].status,"posted");
+      assert.equal((await query("SELECT status FROM journal_entries WHERE id=$1",[billReversal.reversalJeId])).rows[0].status,"posted");
+      await assert.rejects(invoices.voidInvoice(invoice.id,f.id,admin,date));
+      await assert.rejects(bills.voidBill(bill.id,f.id,admin,date));
+      const balances = (await query("SELECT COALESCE(SUM(debit_base-credit_base),0)::numeric AS net FROM journal_entry_lines WHERE je_id IN (SELECT id FROM journal_entries WHERE entity_id=$1)",[f.id])).rows[0];
+      assert.equal(Number(balances.net),0);
+    });
+    await t.test("service catalog lines post without stock and can be voided", async () => {
+      const f = await fixture("Service catalog client");
+      const inventory = await import("../src/services/inventory");
+      const contacts = await import("../src/services/contacts");
+      const invoices = await import("../src/services/invoices");
+      const service = await inventory.createItem({entityId:f.id,sku:"DESIGN",name:"Design",costingMethod:"fifo",salesPrice:"75",isService:true},admin);
+      const customer = await contacts.createContact({entityId:f.id,type:"customer",name:"Design buyer"},admin);
+      const date = new Date().toISOString().slice(0,10);
+      const invoice = await invoices.createInvoiceDraft({entityId:f.id,customerId:customer.id,issueDate:date,dueDate:date,
+        lines:[{description:"Design",quantity:"1",unitPrice:"75",revenueAccountId:f.account("4000"),itemId:service.id}]},admin);
+      await invoices.postInvoice(invoice.id,f.id,admin);
+      assert.equal((await query("SELECT count(*)::int AS n FROM inventory_movements WHERE invoice_id=$1",[invoice.id])).rows[0].n,0);
+      await invoices.voidInvoice(invoice.id,f.id,admin,date);
+      assert.equal((await invoices.getInvoice(invoice.id,f.id))?.outstanding,"0.00");
+    });
+    await t.test("owner settings change future document numbers and preserve posted fiscal rules", async () => {
+      const f = await fixture("Company settings client");
+      const settings = await import("../src/services/business-settings");
+      const contacts = await import("../src/services/contacts");
+      const invoices = await import("../src/services/invoices");
+      const profile = { name:"Updated Company", legalName:"Updated Company Ltd", fiscalYearStartMonth:1,
+        legalStructure:"Limited", taxIdentifiers:"TAX-1", registeredAddress:"Main Street",
+        brandAccent:"#123456", invoiceHeader:"Thank you", invoicePrefix:"SALE", billPrefix:"PAY",
+        invoiceTerms:"Due in 30 days", defaultTaxRate:"5", invoiceEmailTemplate:"Invoice attached",
+        reminderEmailTemplate:"Please pay" };
+      await settings.updateBusinessSettings(f.id,admin,profile);
+      assert.equal((await settings.getBusinessSettings(f.id)).invoicePrefix,"SALE");
+      const customer = await contacts.createContact({entityId:f.id,type:"customer",name:"Profile buyer"},admin);
+      const date = new Date().toISOString().slice(0,10);
+      const invoice = await invoices.createInvoiceDraft({entityId:f.id,customerId:customer.id,issueDate:date,dueDate:date,
+        lines:[{description:"Service",quantity:"1",unitPrice:"10",revenueAccountId:f.account("4000")}]},admin);
+      assert.match(invoice.invoiceNumber,/^SALE-\d{4}$/);
+      await invoices.postInvoice(invoice.id,f.id,admin);
+      await assert.rejects(settings.updateBusinessSettings(f.id,admin,{...profile,fiscalYearStartMonth:4}),/cannot change/);
+      assert.equal((await settings.getBusinessSettings(f.id)).fiscalYearStartMonth,1);
+    });
     await t.test("settlements reject unsafe accounts and dates without changing documents or ledger", async () => {
       const contacts = await import("../src/services/contacts");
       const invoices = await import("../src/services/invoices");
@@ -476,7 +542,7 @@ test("isolated PostgreSQL service regressions (never loads .env)", { timeout: 12
         const newInvoice = await request("/business/invoices/new","business_admin");
         assert.equal(newInvoice.status,200);
         assert.ok((await newInvoice.text()).includes("New invoice"));
-        for (const [path,title] of [["/business/bills/new","New bill"],["/business/contacts","Customers"],["/business/reports","Reports"]]) {
+        for (const [path,title] of [["/business/bills/new","New bill"],["/business/contacts","Customers"],["/business/catalog","Products"],["/business/reports","Reports"],["/business/reports/trial-balance","Trial Balance"]]) {
           const response = await request(path,"business_admin");
           assert.equal(response.status,200,`${path}: ${output}`);
           assert.ok((await response.text()).includes(title));

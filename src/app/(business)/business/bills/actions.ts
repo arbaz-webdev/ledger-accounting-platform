@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { portalContext } from "@/lib/business-guard";
 import { requireModuleEdit } from "@/services/permissions";
-import { createBillDraft, postBill, deleteBillDraft } from "@/services/bills";
+import { createBillDraft, postBill, deleteBillDraft, updateBillMetadata, voidBill } from "@/services/bills";
 import { recordSettlement, type SettlementKind } from "@/services/settlements";
 
 type BillPayload = {
@@ -101,6 +101,36 @@ export async function settleBusinessBillAction(formData: FormData) {
     }, user.id);
   } catch (error) {
     redirect(`/business/bills/${billId}?error=${encodeURIComponent(error instanceof Error ? error.message : "Unable to record payment")}`);
+  }
+  revalidatePath("/business/bills");
+  redirect(`/business/bills/${billId}`);
+}
+
+export async function updateBusinessBillMetadataAction(formData: FormData) {
+  const entityId = String(formData.get("entityId"));
+  const billId = String(formData.get("billId"));
+  const user = await authorize(entityId);
+  try {
+    await updateBillMetadata(billId, entityId, user.id, {
+      dueDate: String(formData.get("dueDate")),
+      notes: String(formData.get("notes") ?? ""),
+      supplierReference: String(formData.get("supplierReference") ?? ""),
+    });
+  } catch (error) {
+    redirect(`/business/bills/${billId}?error=${encodeURIComponent(error instanceof Error ? error.message : "Unable to update bill")}`);
+  }
+  revalidatePath("/business/bills");
+  redirect(`/business/bills/${billId}`);
+}
+
+export async function voidBusinessBillAction(formData: FormData) {
+  const entityId = String(formData.get("entityId"));
+  const billId = String(formData.get("billId"));
+  const user = await authorize(entityId);
+  try {
+    await voidBill(billId, entityId, user.id, String(formData.get("voidDate")));
+  } catch (error) {
+    redirect(`/business/bills/${billId}?error=${encodeURIComponent(error instanceof Error ? error.message : "Unable to void bill")}`);
   }
   revalidatePath("/business/bills");
   redirect(`/business/bills/${billId}`);

@@ -4,8 +4,10 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { portalContext } from "@/lib/business-guard";
 import { requireModuleEdit } from "@/services/permissions";
-import { createInvoiceDraft, postInvoice, deleteInvoiceDraft } from "@/services/invoices";
+import { createInvoiceDraft, postInvoice, deleteInvoiceDraft, updateInvoiceMetadata, voidInvoice } from "@/services/invoices";
 import { recordSettlement, type SettlementKind } from "@/services/settlements";
+import { getInvoice } from "@/services/invoices";
+import { todayIso } from "@/lib/format";
 
 type InvoicePayload = {
   entityId: string;
@@ -99,6 +101,54 @@ export async function settleBusinessInvoiceAction(formData: FormData) {
     }, user.id);
   } catch (error) {
     redirect(`/business/invoices/${invoiceId}?error=${encodeURIComponent(error instanceof Error ? error.message : "Unable to record settlement")}`);
+  }
+  revalidatePath("/business/invoices");
+  redirect(`/business/invoices/${invoiceId}`);
+}
+
+export async function updateBusinessInvoiceMetadataAction(formData: FormData) {
+  const entityId = String(formData.get("entityId"));
+  const invoiceId = String(formData.get("invoiceId"));
+  const user = await authorize(entityId);
+  try {
+    await updateInvoiceMetadata(invoiceId, entityId, user.id, {
+      dueDate: String(formData.get("dueDate")),
+      notes: String(formData.get("notes") ?? ""),
+      purchaseOrderReference: String(formData.get("purchaseOrderReference") ?? ""),
+    });
+  } catch (error) {
+    redirect(`/business/invoices/${invoiceId}?error=${encodeURIComponent(error instanceof Error ? error.message : "Unable to update invoice")}`);
+  }
+  revalidatePath("/business/invoices");
+  redirect(`/business/invoices/${invoiceId}`);
+}
+
+export async function voidBusinessInvoiceAction(formData: FormData) {
+  const entityId = String(formData.get("entityId"));
+  const invoiceId = String(formData.get("invoiceId"));
+  const user = await authorize(entityId);
+  try {
+    await voidInvoice(invoiceId, entityId, user.id, String(formData.get("voidDate")));
+  } catch (error) {
+    redirect(`/business/invoices/${invoiceId}?error=${encodeURIComponent(error instanceof Error ? error.message : "Unable to void invoice")}`);
+  }
+  revalidatePath("/business/invoices");
+  redirect(`/business/invoices/${invoiceId}`);
+}
+
+export async function writeOffOverdueInvoiceAction(formData: FormData) {
+  const entityId = String(formData.get("entityId"));
+  const invoiceId = String(formData.get("invoiceId"));
+  const user = await authorize(entityId);
+  const invoice = await getInvoice(invoiceId, entityId);
+  if (!invoice || invoice.invoice.status !== "posted" || invoice.invoice.dueDate >= todayIso() || Number(invoice.outstanding) <= 0) {
+    throw new Error("Only an overdue open invoice can be written off");
+  }
+  try {
+    await recordSettlement({ entityId, invoiceId, kind: "write_off", date: todayIso(), amount: invoice.outstanding,
+      reference: `Bad debt ${invoice.invoice.invoiceNumber}` }, user.id);
+  } catch (error) {
+    redirect(`/business/invoices/${invoiceId}?error=${encodeURIComponent(error instanceof Error ? error.message : "Unable to write off invoice")}`);
   }
   revalidatePath("/business/invoices");
   redirect(`/business/invoices/${invoiceId}`);

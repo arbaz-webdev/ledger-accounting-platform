@@ -372,7 +372,8 @@ export async function voidJournalEntry(
   entityId: string,
   voidedByUserId: string,
   voidDate?: string,
-  callerTx?: Tx
+  callerTx?: Tx,
+  expectedDocumentSource?: "invoice" | "bill"
 ): Promise<{ reversalJeId: string; reversalJeNumber: number }> {
   const run = async (tx: Tx) => {
     await tx.select({ id: entities.id }).from(entities).where(eq(entities.id, entityId)).for("share");
@@ -387,7 +388,11 @@ export async function voidJournalEntry(
       throw new JournalValidationError(`Only posted entries can be voided (this one is ${je.status})`);
     }
     if (je.reversesJeId) throw new JournalValidationError("A reversal entry cannot itself be reversed");
-    if (!["manual", "system"].includes(je.sourceModule)) throw new JournalValidationError("Document and stock journals require a document-aware correction; they cannot be reversed here");
+    if (expectedDocumentSource) {
+      if (!callerTx || je.sourceModule !== expectedDocumentSource) throw new JournalValidationError("Document reversal requires its matching document workflow");
+    } else if (!["manual", "system"].includes(je.sourceModule)) {
+      throw new JournalValidationError("Document and stock journals require a document-aware correction; they cannot be reversed here");
+    }
     if (voidDate && voidDate < je.date) throw new JournalValidationError("Reversal date cannot precede the original entry");
     if (!callerTx) {
       const [close] = await tx.select({ id: fiscalYearCloses.id }).from(fiscalYearCloses).where(eq(fiscalYearCloses.jeId, jeId));

@@ -142,6 +142,22 @@ export const entities = pgTable("entities", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+export const businessSettings = pgTable("business_settings", {
+  entityId: uuid("entity_id").primaryKey().references(() => entities.id, { onDelete: "cascade" }),
+  legalStructure: text("legal_structure"),
+  taxIdentifiers: text("tax_identifiers"),
+  registeredAddress: text("registered_address"),
+  brandAccent: char("brand_accent", { length: 7 }).notNull().default("#0d9488"),
+  invoiceHeader: text("invoice_header"),
+  invoicePrefix: text("invoice_prefix").notNull().default("INV"),
+  billPrefix: text("bill_prefix").notNull().default("BILL"),
+  invoiceTerms: text("invoice_terms"),
+  defaultTaxRate: numeric("default_tax_rate", { precision: 9, scale: 4 }).notNull().default("0"),
+  invoiceEmailTemplate: text("invoice_email_template"),
+  reminderEmailTemplate: text("reminder_email_template"),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 export const userEntityAccess = pgTable(
   "user_entity_access",
   {
@@ -357,6 +373,7 @@ export const invoices = pgTable(
     dueDate: date("due_date").notNull(),
     status: documentStatusEnum("status").notNull().default("draft"),
     notes: text("notes"),
+    purchaseOrderReference: text("purchase_order_reference"),
     currency: char("currency", { length: 3 }).notNull(),
     fxRate: numeric("fx_rate", { precision: 18, scale: 8 }).notNull().default("1"),
     subtotal: numeric("subtotal", { precision: 18, scale: 2 }).notNull().default("0"),
@@ -630,6 +647,8 @@ export const inventoryItems = pgTable(
     costingMethod: costingMethodEnum("costing_method").notNull().default("fifo"),
     unit: text("unit").notNull().default("unit"),
     salesPrice: numeric("sales_price", { precision: 18, scale: 4 }).notNull().default("0"),
+    isService: boolean("is_service").notNull().default(false),
+    reorderLevel: numeric("reorder_level", { precision: 18, scale: 4 }).notNull().default("0"),
     isActive: boolean("is_active").notNull().default(true),
     createdBy: uuid("created_by")
       .notNull()

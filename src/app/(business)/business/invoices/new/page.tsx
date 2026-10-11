@@ -5,6 +5,7 @@ import { listContacts } from "@/services/contacts";
 import { listAccounts } from "@/services/coa";
 import { listItems } from "@/services/inventory";
 import { listEntityCurrencies } from "@/services/fx";
+import { getBusinessSettings } from "@/services/business-settings";
 import { PageHeader, EmptyState } from "@/components/ui";
 import { IconBuilding } from "@/components/icons";
 import { NewBusinessInvoiceForm } from "./new-invoice-form";
@@ -13,11 +14,12 @@ export default async function NewBusinessInvoicePage() {
   const ctx = await portalContext();
   if (!(await hasModule(ctx.user, ctx.entityId, "sales", "edit"))) redirect("/business?denied=sales");
   const { entityId } = ctx;
-  const [customers, accounts, items, currencies] = await Promise.all([
+  const [customers, accounts, items, currencies, settings] = await Promise.all([
     listContacts(entityId, "customer"),
     listAccounts(entityId),
     listItems(entityId, { activeOnly: true }),
     listEntityCurrencies(entityId),
+    getBusinessSettings(entityId),
   ]);
   const activeCustomers = customers.filter((customer) => customer.isActive);
   const revenueAccounts = accounts.filter((account) => account.isActive && (account.type === "revenue" || account.type === "other_income"));
@@ -35,6 +37,8 @@ export default async function NewBusinessInvoicePage() {
       items={items.map((item) => ({ id: item.id, label: `${item.sku} — ${item.name}`, salesPrice: item.salesPrice }))}
       baseCurrency={ctx.baseCurrency}
       currencies={currencies}
+      defaultTaxRate={settings.defaultTaxRate}
+      defaultNotes={settings.invoiceTerms}
     />}
   </main>;
 }

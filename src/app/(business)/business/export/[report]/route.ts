@@ -3,18 +3,22 @@ import { toCsv, csvResponse, exportFilename, type CsvValue } from "@/lib/csv-exp
 import { getProfitAndLoss, getBalanceSheet, getCashFlow, defaultFiscalRange } from "@/services/statements";
 import { getArAgeing, getApAgeing, BUCKET_LABELS } from "@/services/ageing";
 import { todayIso } from "@/lib/format";
+import { getPortalCatalogReport, PORTAL_REPORTS, type PortalReportSlug } from "@/services/portal-report-catalog";
 
 const isDate = (value: string | null) => !!value && /^\d{4}-\d{2}-\d{2}$/.test(value);
 
 export async function GET(request: Request, context: { params: Promise<{ report: string }> }) {
   const { report } = await context.params;
-  if (!["profit-loss", "balance-sheet", "cash-flow", "ar-ageing", "ap-ageing"].includes(report)) {
+  if (!["profit-loss", "balance-sheet", "cash-flow", "ar-ageing", "ap-ageing"].includes(report) && !(report in PORTAL_REPORTS)) {
     return new Response("Unknown report", { status: 404 });
   }
   // Route handlers do not inherit page/layout guards. Recheck entity and grants.
   const portal = await guardPortal("reports");
   if (report === "ar-ageing" && !portal.allowed.has("sales")) return new Response("Forbidden", { status: 403 });
   if (report === "ap-ageing" && !portal.allowed.has("purchases")) return new Response("Forbidden", { status: 403 });
+  if (report === "sales-by-customer" && !portal.allowed.has("sales")) return new Response("Forbidden", { status: 403 });
+  if (report === "purchases-by-vendor" && !portal.allowed.has("purchases")) return new Response("Forbidden", { status: 403 });
+  if (report === "inventory-valuation" && !portal.allowed.has("inventory")) return new Response("Forbidden", { status: 403 });
   const today = todayIso();
   const params = new URL(request.url).searchParams;
   const defaults = defaultFiscalRange(today, portal.fiscalYearStartMonth);
@@ -25,6 +29,11 @@ export async function GET(request: Request, context: { params: Promise<{ report:
   let headers: string[] = [];
   let rows: CsvValue[][] = [];
   let suffix = asOf;
+
+  if (report in PORTAL_REPORTS) {
+    const data = await getPortalCatalogReport(portal.entityId, report as PortalReportSlug, from, to);
+    return csvResponse(exportFilename(report, `${from}_${to}`), toCsv(data.headers, data.rows));
+  }
 
   switch (report) {
     case "profit-loss": {

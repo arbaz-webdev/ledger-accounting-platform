@@ -5,6 +5,9 @@ import { MODULE_LABEL, type ModuleKey } from "@/services/permissions";
 import { fmtMoney, todayIso } from "@/lib/format";
 import { PageHeader, StatCard, EmptyState } from "@/components/ui";
 import { IconShield } from "@/components/icons";
+import { listItems, getFastMovingItems } from "@/services/inventory";
+import Decimal from "decimal.js";
+import { AutoRefresh } from "@/components/auto-refresh";
 
 export default async function BusinessDashboard({
   searchParams,
@@ -22,6 +25,9 @@ export default async function BusinessDashboard({
   let apTotal = "0.00";
   let closingCash = "0.00";
   let monthly: { label: string; revenue: number; costs: number }[] = [];
+  let stockValue = "0.00";
+  let lowStock: { sku: string; name: string; qtyOnHand: string; reorderLevel: string }[] = [];
+  let fastMoving: { sku: string; name: string; quantity: string }[] = [];
   if (canReports) {
     const range = defaultFiscalRange(today, fiscalYearStartMonth);
     const monthStarts = Array.from({ length: 6 }, (_, i) => {
@@ -50,13 +56,29 @@ export default async function BusinessDashboard({
       revenue: Number(monthlyPl[index].revenue.net),
       costs: Number(monthlyPl[index].cogs.net) + Number(monthlyPl[index].operatingExpenses.total),
     }));
+    if (allowed.has("inventory")) {
+      const [items, movers] = await Promise.all([listItems(entityId, { activeOnly: true }), getFastMovingItems(entityId)]);
+      const products = items.filter((item) => !item.isService);
+      stockValue = products.reduce((value, item) => value.plus(item.valueOnHand), new Decimal(0)).toFixed(2);
+      lowStock = products.filter((item) => Number(item.reorderLevel) > 0 && Number(item.qtyOnHand) <= Number(item.reorderLevel));
+      fastMoving = movers;
+    }
   }
   const chartMax = Math.max(1, ...monthly.flatMap((point) => [point.revenue, point.costs]));
   const expenseLines = [...(pl?.operatingExpenses.lines ?? [])].sort((a, b) => Math.abs(Number(b.amount)) - Math.abs(Number(a.amount))).slice(0, 5);
   const expenseMax = Math.max(1, ...expenseLines.map((line) => Math.abs(Number(line.amount))));
+  const expenseColors = ["#0d9488", "#2563eb", "#f59e0b", "#e11d48", "#8b5cf6"];
+  const expenseTotal = expenseLines.reduce((total, line) => total + Math.abs(Number(line.amount)), 0);
+  let expenseOffset = 0;
+  const expenseGradient = expenseTotal > 0 ? `conic-gradient(${expenseLines.map((line, index) => {
+    const start = expenseOffset;
+    expenseOffset += Math.abs(Number(line.amount)) / expenseTotal * 100;
+    return `${expenseColors[index]} ${start}% ${expenseOffset}%`;
+  }).join(", ")})` : undefined;
 
   return (
     <main className="mx-auto max-w-6xl px-6 py-8">
+      <AutoRefresh />
       <div className="fade-up">
         <PageHeader
           title={entityName}
@@ -95,6 +117,7 @@ export default async function BusinessDashboard({
                 hint={baseCurrency}
               />
               <StatCard label="Cash & bank" value={fmtMoney(closingCash)} hint={baseCurrency} />
+              {allowed.has("inventory") && <StatCard label="Inventory value" value={fmtMoney(stockValue)} hint={`${lowStock.length} reorder alerts`} />}
               {allowed.has("sales") && (
                 <StatCard label="Owed to you" value={fmtMoney(arTotal)} hint="Open invoices" />
               )}
@@ -122,19 +145,25 @@ export default async function BusinessDashboard({
               <section className="card p-5" aria-labelledby="expense-title">
                 <h2 id="expense-title" className="text-base font-semibold text-[var(--ink-900)]">Operating expenses</h2>
                 <p className="mb-4 text-sm text-[var(--ink-500)]">Fiscal year to date · {baseCurrency}</p>
-                {expenseLines.length ? <ul className="space-y-4">{expenseLines.map((line) => <li key={line.number}>
+                {expenseLines.length ? <div className="flex flex-wrap items-center gap-6"><div role="img" aria-label="Operating expense share by category" className="h-40 w-40 shrink-0 rounded-full" style={{ background: expenseGradient }} /><ul className="min-w-0 flex-1 space-y-4">{expenseLines.map((line, index) => <li key={line.number}>
                   <div className="mb-1 flex justify-between gap-2 text-sm"><span className="truncate">{line.name}</span><span className="num shrink-0">{fmtMoney(line.amount)}</span></div>
-                  <div className="h-2 rounded-full bg-[var(--ink-100)]"><div className="h-2 rounded-full bg-[var(--brand-500)]" style={{ width: `${Math.min(100, Math.abs(Number(line.amount)) / expenseMax * 100)}%` }} /></div>
-                </li>)}</ul> : <p className="text-sm text-[var(--ink-500)]">No operating expenses in this period.</p>}
+                  <div className="h-2 rounded-full bg-[var(--ink-100)]"><div className="h-2 rounded-full" style={{ width: `${Math.min(100, Math.abs(Number(line.amount)) / expenseMax * 100)}%`, backgroundColor: expenseColors[index] }} /></div>
+                </li>)}</ul></div> : <p className="text-sm text-[var(--ink-500)]">No operating expenses in this period.</p>}
               </section>
             </div>
+
+            {allowed.has("inventory") && <section className="card mt-5 p-5" aria-labelledby="inventory-title">
+              <h2 id="inventory-title" className="text-base font-semibold text-[var(--ink-900)]">Inventory status</h2>
+              <div className="mt-3 grid gap-4 sm:grid-cols-2">
+                <div><h3 className="text-sm font-semibold">Reorder alerts</h3>{lowStock.length ? <ul className="mt-2 space-y-1 text-sm">{lowStock.slice(0, 5).map((item) => <li key={item.sku}>{item.name}: {item.qtyOnHand} on hand (threshold {item.reorderLevel})</li>)}</ul> : <p className="mt-2 text-sm text-[var(--ink-500)]">No items below their reorder level.</p>}</div>
+                <div><h3 className="text-sm font-semibold">Fast-moving products · last 30 days</h3>{fastMoving.length ? <ul className="mt-2 space-y-1 text-sm">{fastMoving.map((item) => <li key={item.sku}>{item.name}: {item.quantity} issued</li>)}</ul> : <p className="mt-2 text-sm text-[var(--ink-500)]">No recent stock issues.</p>}</div>
+              </div>
+            </section>}
 
             <div className="card mt-5 p-5">
               <h2 className="text-sm font-semibold text-[var(--ink-900)]">Where to look</h2>
               <p className="mt-1 text-[0.8125rem] text-[var(--ink-500)]">
-                Use the tabs above for your invoices, bills and statements. Everything updates the
-                moment your accountant posts to the books — there is nothing to refresh or reconcile
-                on your side.
+                Use the menus above for transactions and reports. This page refreshes automatically while open.
               </p>
             </div>
           </>

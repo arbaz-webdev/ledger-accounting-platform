@@ -6,7 +6,7 @@ import { listCashBankAccounts } from "@/services/coa";
 import { resolveMapping } from "@/services/mappings";
 import { fmtDate, fmtMoney, todayIso } from "@/lib/format";
 import { PageHeader } from "@/components/ui";
-import { postBusinessInvoiceAction, discardBusinessInvoiceAction, settleBusinessInvoiceAction } from "../actions";
+import { postBusinessInvoiceAction, discardBusinessInvoiceAction, settleBusinessInvoiceAction, updateBusinessInvoiceMetadataAction, voidBusinessInvoiceAction, writeOffOverdueInvoiceAction } from "../actions";
 
 export default async function BusinessInvoicePage({ params, searchParams }: {
   params: Promise<{ invoiceId: string }>;
@@ -39,7 +39,7 @@ export default async function BusinessInvoicePage({ params, searchParams }: {
     <div className="mt-6 grid gap-4 lg:grid-cols-[1fr_20rem]">
       <section className="card overflow-x-auto"><h2 className="border-b border-[var(--ink-100)] p-4 text-sm font-semibold">Payments, credits and write-offs</h2>
         {settlements.length ? <table className="tbl"><thead><tr><th>Date</th><th>Type</th><th>Reference</th><th className="text-right">Amount</th></tr></thead><tbody>
-          {settlements.map((settlement) => <tr key={settlement.id}><td>{fmtDate(settlement.date)}</td><td>{settlement.kind.replaceAll("_", " ")}</td><td>{settlement.reference}</td><td className="td-num">{fmtMoney(settlement.amount)}</td></tr>)}
+          {settlements.map((settlement) => <tr key={settlement.id}><td>{fmtDate(settlement.date)}</td><td>{settlement.kind === "credit_note" ? <a href={`/business/credit-notes/${settlement.id}`} className="text-[var(--brand-700)] hover:underline">View / print credit note</a> : settlement.kind.replaceAll("_", " ")}</td><td>{settlement.reference}</td><td className="td-num">{fmtMoney(settlement.amount)}</td></tr>)}
         </tbody></table> : <p className="p-4 text-sm text-[var(--ink-500)]">No payments or credits yet.</p>}
       </section>
       {canSettle && <form action={settleBusinessInvoiceAction} className="card h-fit space-y-3 p-4">
@@ -53,5 +53,25 @@ export default async function BusinessInvoicePage({ params, searchParams }: {
         <button className="btn btn-brand w-full">Record</button>
       </form>}
     </div>
+    {canEdit && invoice.status !== "void" && <section className="card mt-6 p-4">
+      <h2 className="mb-3 text-sm font-semibold">Invoice details</h2>
+      <form action={updateBusinessInvoiceMetadataAction} className="grid gap-3 sm:grid-cols-2">
+        <input type="hidden" name="entityId" value={ctx.entityId} /><input type="hidden" name="invoiceId" value={invoice.id} />
+        <label className="block"><span className="field-label">Due date</span><input name="dueDate" type="date" min={invoice.issueDate} required defaultValue={invoice.dueDate} className="input" /></label>
+        <label className="block"><span className="field-label">PO or reference number</span><input name="purchaseOrderReference" maxLength={160} defaultValue={invoice.purchaseOrderReference ?? ""} className="input" /></label>
+        <label className="block sm:col-span-2"><span className="field-label">Notes</span><textarea name="notes" maxLength={4000} defaultValue={invoice.notes ?? ""} className="input min-h-24" /></label>
+        <button className="btn btn-secondary sm:col-span-2">Save details</button>
+      </form>
+    </section>}
+    {canEdit && invoice.status === "posted" && settlements.length === 0 && !lines.some((line) => line.itemId && !line.itemIsService) && <form action={voidBusinessInvoiceAction} className="card mt-6 flex flex-wrap items-end gap-3 p-4">
+      <input type="hidden" name="entityId" value={ctx.entityId} /><input type="hidden" name="invoiceId" value={invoice.id} />
+      <label><span className="field-label">Reversal date</span><input name="voidDate" type="date" min={invoice.issueDate} required defaultValue={todayIso()} className="input" /></label>
+      <button className="btn btn-secondary">Void invoice with reversal</button>
+    </form>}
+    {canEdit && invoice.status === "posted" && invoice.dueDate < todayIso() && Number(outstanding) > 0 && <form action={writeOffOverdueInvoiceAction} className="card mt-6 flex flex-wrap items-center justify-between gap-3 p-4">
+      <input type="hidden" name="entityId" value={ctx.entityId} /><input type="hidden" name="invoiceId" value={invoice.id} />
+      <p className="text-sm">Write off the remaining {fmtMoney(outstanding)} as bad debt. This posts an audited expense and clears the balance.</p>
+      <button className="btn btn-secondary">Write off as bad debt</button>
+    </form>}
   </main>;
 }

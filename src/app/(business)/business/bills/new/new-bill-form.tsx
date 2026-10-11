@@ -4,7 +4,7 @@ import { DocumentForm, type Option, type ItemOption } from "@/components/documen
 import { createBusinessBillAction } from "../actions";
 
 export function NewBusinessBillForm({
-  entityId, suppliers, accounts, contactTerms, items, baseCurrency, currencies, inventoryAccountId,
+  entityId, suppliers, accounts, contactTerms, items, baseCurrency, currencies, inventoryAccountId, defaultTaxRate,
 }: {
   entityId: string;
   suppliers: Option[];
@@ -14,6 +14,7 @@ export function NewBusinessBillForm({
   baseCurrency: string;
   currencies: string[];
   inventoryAccountId?: string;
+  defaultTaxRate: string;
 }) {
   return <DocumentForm
     entityId={entityId}
@@ -25,6 +26,7 @@ export function NewBusinessBillForm({
     baseCurrency={baseCurrency}
     currencies={currencies}
     inventoryAccountId={inventoryAccountId}
+    defaultTaxRate={defaultTaxRate}
     onSubmit={(payload) => createBusinessBillAction({
       entityId: payload.entityId,
       supplierId: payload.contactId,
