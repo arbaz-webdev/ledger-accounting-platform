@@ -1,4 +1,4 @@
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { entities, userEntityAccess, journalEntries } from "@/db/schema";
 import { requireAccountant } from "@/lib/auth";
@@ -17,13 +17,13 @@ export default async function ClientDashboard() {
       .select(cols)
       .from(entities)
       .innerJoin(userEntityAccess, eq(userEntityAccess.entityId, entities.id))
-      .where(eq(userEntityAccess.userId, user.id));
+      .where(and(eq(userEntityAccess.userId, user.id), eq(entities.isFirmBooks, false)));
   } else if (user.role === "platform_admin") {
     // Platform admin sees every entity across all firms
     clients = await db.select(cols).from(entities);
   } else {
     // firm_admin sees all clients of their firm
-    clients = await db.select(cols).from(entities).where(eq(entities.firmId, user.firmId!));
+    clients = await db.select(cols).from(entities).where(and(eq(entities.firmId, user.firmId!), eq(entities.isFirmBooks, false)));
   }
 
   // Posted-entry counts per client for the cards

@@ -163,7 +163,7 @@ export async function requireFirmOwner(): Promise<SessionUser & { firmId: string
  */
 export async function assertEntityAccess(user: SessionUser, entityId: string): Promise<void> {
   const entityRows = await db
-    .select({ id: entities.id, firmId: entities.firmId, isActive: entities.isActive })
+    .select({ id: entities.id, firmId: entities.firmId, isActive: entities.isActive, isFirmBooks: entities.isFirmBooks })
     .from(entities)
     .where(eq(entities.id, entityId));
   const entity = entityRows[0];
@@ -172,6 +172,10 @@ export async function assertEntityAccess(user: SessionUser, entityId: string): P
   // The software platform administers subscriptions, not tenant books.
   if (user.role === "platform_admin") throw new Error("Platform users cannot access tenant books");
   if (!entity.isActive) throw new Error("Access denied to this entity");
+  if (entity.isFirmBooks) {
+    if (user.role === "firm_owner" && entity.firmId === user.firmId) return;
+    throw new Error("Only the firm owner can access firm books");
+  }
   // Whoever runs the firm reaches every client of that firm.
   if ((user.role === "firm_admin" || user.role === "firm_owner") && entity.firmId === user.firmId) {
     return;

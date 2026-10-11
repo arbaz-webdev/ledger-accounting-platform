@@ -15,6 +15,7 @@ const NAV: NavItem[] = [
   { section: "Practice" },
   { href: "/clients", label: "Clients", icon: "building" },
   { href: "/team", label: "Team", icon: "shield" },
+  { href: "/reports", label: "Reports", icon: "trend" },
   { section: "Account" },
   { href: "/subscription", label: "Subscription", icon: "scale" },
   { href: "/settings", label: "Firm settings", icon: "settings" },

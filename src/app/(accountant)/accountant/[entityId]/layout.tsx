@@ -104,6 +104,7 @@ export default async function EntityLayout({
             Switch client →
           </div>
         </a>
+        {user.role === "firm_owner" && <a href="/firm" className="mx-3 mb-3 block rounded-lg border border-[var(--brand-500)]/40 px-3 py-2 text-center text-xs font-semibold text-[var(--brand-500)] hover:bg-white/[0.08]">← Back to firm dashboard</a>}
 
         <div className="min-h-0 flex-1 overflow-y-auto">
           <SidebarNav entityId={entityId} items={nav} />

@@ -68,6 +68,7 @@ export default async function FirmClientsPage({
                 <th className="text-right">Posted entries</th>
                 <th className="text-right">Added</th>
                 <th className="text-right">Status</th>
+                <th>Subscription</th>
                 <th className="text-right">Actions</th>
               </tr>
             </thead>
@@ -85,6 +86,7 @@ export default async function FirmClientsPage({
                       {c.isActive ? "active" : "archived"}
                     </span>
                   </td>
+                  <td><a href={`/firm/clients/${c.id}`} className="text-[var(--brand-700)] hover:underline">{c.subscriptionManagedBy === "firm" ? "Firm managed" : "Client managed"}</a></td>
                   <td className="whitespace-nowrap text-right">
                     {c.isActive && (
                       <a href={`/accountant/${c.id}`} className="btn btn-ghost btn-sm">

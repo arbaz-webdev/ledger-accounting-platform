@@ -193,7 +193,7 @@ export async function firmUsage(firmId: string, executor: Db | Tx = db): Promise
   const [entityCount] = await executor
     .select({ n: sql<number>`count(*)::int` })
     .from(entities)
-    .where(and(eq(entities.firmId, firmId), eq(entities.isActive, true)));
+    .where(and(eq(entities.firmId, firmId), eq(entities.isActive, true), eq(entities.isFirmBooks, false)));
   const [userCount] = await executor
     .select({ n: sql<number>`count(*)::int` })
     .from(users)

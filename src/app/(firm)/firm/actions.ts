@@ -8,6 +8,7 @@ import {
   createClient,
   setClientActive,
   updateFirmSettings,
+  createFirmBooks,
   FirmError,
 } from "@/services/firms";
 import { SubscriptionError } from "@/services/subscriptions";
@@ -21,6 +22,14 @@ import {
 import { isUniqueViolation, dbErrorMessage } from "@/db/errors";
 
 export type FormState = { error?: string; ok?: string };
+
+export async function createFirmBooksAction(form: FormData) {
+  const user = await requireFirmOwner();
+  try { await createFirmBooks(user.firmId, String(form.get("currency") ?? "USD"), user.id); }
+  catch (error) { redirect(`/firm?error=${encodeURIComponent(readable(error, "Could not create firm books"))}`); }
+  revalidatePath("/firm");
+  redirect("/firm?books=ready");
+}
 
 function readable(err: unknown, fallback: string): string {
   if (
@@ -160,6 +169,17 @@ export async function updateFirmSettingsAction(
 ): Promise<FormState> {
   const user = await requireFirmOwner();
   try {
+    const file = formData.get("logo");
+    let logo: { data: Buffer; mime: string } | undefined;
+    if (file instanceof File && file.size > 0) {
+      if (file.size > 256_000) return { error: "Logo must be smaller than 256 KB" };
+      const data = Buffer.from(await file.arrayBuffer());
+      const mime = data.subarray(0, 8).equals(Buffer.from([137,80,78,71,13,10,26,10])) ? "image/png"
+        : data.subarray(0, 3).equals(Buffer.from([255,216,255])) ? "image/jpeg"
+        : data.subarray(0, 4).toString() === "RIFF" && data.subarray(8, 12).toString() === "WEBP" ? "image/webp" : "";
+      if (!mime) return { error: "Upload a valid PNG, JPEG or WebP logo" };
+      logo = { data, mime };
+    }
     await updateFirmSettings(
       user.firmId,
       {
@@ -167,6 +187,10 @@ export async function updateFirmSettingsAction(
         legalName: String(formData.get("legalName") ?? "") || undefined,
         contactEmail: String(formData.get("contactEmail") ?? "") || undefined,
         contactPhone: String(formData.get("contactPhone") ?? "") || undefined,
+        fax: String(formData.get("fax") ?? "") || undefined,
+        contactPerson: String(formData.get("contactPerson") ?? "") || undefined,
+        logo,
+        removeLogo: formData.get("removeLogo") === "on",
       },
       user.id
     );
@@ -174,5 +198,6 @@ export async function updateFirmSettingsAction(
     return { error: readable(err, "Failed to save settings") };
   }
   revalidatePath("/firm/settings");
+  revalidatePath("/firm");
   return { ok: "Saved." };
 }

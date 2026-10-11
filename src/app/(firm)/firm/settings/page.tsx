@@ -21,6 +21,9 @@ export default async function FirmSettingsPage() {
           legalName: firm?.legalName ?? "",
           contactEmail: firm?.contactEmail ?? "",
           contactPhone: firm?.contactPhone ?? "",
+          fax: firm?.fax ?? "",
+          contactPerson: firm?.contactPerson ?? "",
+          hasLogo: Boolean(firm?.logoData),
         }}
       />
     </div>

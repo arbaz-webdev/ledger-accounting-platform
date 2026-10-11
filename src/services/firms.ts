@@ -54,7 +54,7 @@ export async function listFirms(): Promise<FirmListRow[]> {
     SELECT f.id, f.name, f.legal_name, f.contact_email, f.is_active, f.created_at,
            p.name AS plan_name, p.code AS plan_code, p.monthly_price,
            s.status,
-           (SELECT COUNT(*)::int FROM entities e WHERE e.firm_id = f.id AND e.is_active) AS entity_count,
+           (SELECT COUNT(*)::int FROM entities e WHERE e.firm_id = f.id AND e.is_active AND NOT e.is_firm_books) AS entity_count,
            (SELECT COUNT(*)::int FROM users u WHERE u.firm_id = f.id AND u.is_active) AS user_count
     FROM firms f
     LEFT JOIN subscriptions s ON s.firm_id = f.id AND s.status <> 'cancelled'
@@ -116,7 +116,7 @@ export async function getFirm(firmId: string) {
       isActive: entities.isActive,
     })
     .from(entities)
-    .where(eq(entities.firmId, firmId))
+    .where(and(eq(entities.firmId, firmId), eq(entities.isFirmBooks, false)))
     .orderBy(asc(entities.name));
 
   return { firm, users: firmUsers, entities: firmEntities };
@@ -225,6 +225,10 @@ export type FirmSettingsInput = {
   legalName?: string;
   contactEmail?: string;
   contactPhone?: string;
+  fax?: string;
+  contactPerson?: string;
+  logo?: { data: Buffer; mime: string };
+  removeLogo?: boolean;
 };
 
 export async function updateFirmSettings(
@@ -234,22 +238,35 @@ export async function updateFirmSettings(
 ) {
   return db.transaction(async (tx) => {
     if (!input.name.trim()) throw new FirmError("Firm name is required");
+    if (input.logo && (input.logo.data.length > 256_000 || !["image/png", "image/jpeg", "image/webp"].includes(input.logo.mime))) throw new FirmError("Logo must be a PNG, JPEG or WebP under 256 KB");
+    const [before] = await tx.select({ name: firms.name, legalName: firms.legalName, contactEmail: firms.contactEmail,
+      contactPhone: firms.contactPhone, fax: firms.fax, contactPerson: firms.contactPerson, logoMime: firms.logoMime })
+      .from(firms).where(eq(firms.id, firmId)).for("update");
+    if (!before) throw new FirmError("Firm not found");
     await tx
       .update(firms)
       .set({
-        name: input.name.trim(),
-        legalName: input.legalName || null,
-        contactEmail: input.contactEmail || null,
-        contactPhone: input.contactPhone || null,
+        name: input.name.trim().slice(0, 200),
+        legalName: input.legalName?.trim().slice(0, 200) || null,
+        contactEmail: input.contactEmail?.trim().slice(0, 254) || null,
+        contactPhone: input.contactPhone?.trim().slice(0, 80) || null,
+        fax: input.fax?.trim().slice(0, 80) || null,
+        contactPerson: input.contactPerson?.trim().slice(0, 200) || null,
+        ...(input.logo ? { logoData: input.logo.data, logoMime: input.logo.mime } : input.removeLogo ? { logoData: null, logoMime: null } : {}),
       })
       .where(eq(firms.id, firmId));
+    await tx.update(entities).set({ name: `${input.name.trim().slice(0, 180)} (firm books)` })
+      .where(and(eq(entities.firmId, firmId), eq(entities.isFirmBooks, true)));
 
     await writeAudit(tx, {
       userId: actingUserId,
       action: "FIRM_SETTINGS_UPDATED",
       tableName: "firms",
       recordId: firmId,
-      afterState: { name: input.name },
+      beforeState: before,
+      afterState: { name: input.name.trim(), legalName: input.legalName, contactEmail: input.contactEmail,
+        contactPhone: input.contactPhone, fax: input.fax, contactPerson: input.contactPerson,
+        logoMime: input.logo?.mime ?? (input.removeLogo ? null : before.logoMime) },
   });
   });
 }
@@ -260,6 +277,33 @@ export type CreateClientInput = {
   baseCurrency?: string;
   fiscalYearStartMonth?: string | number;
 };
+
+export async function getFirmBooks(firmId: string) {
+  const [books] = await db.select({ id: entities.id, baseCurrency: entities.baseCurrency, name: entities.name })
+    .from(entities).where(and(eq(entities.firmId, firmId), eq(entities.isFirmBooks, true)));
+  return books ?? null;
+}
+
+/** Creates a separate ledger for the practice, excluded from client plan limits. */
+export async function createFirmBooks(firmId: string, currency: string, actingUserId: string) {
+  const baseCurrency = currency.trim().toUpperCase();
+  if (!/^[A-Z]{3}$/.test(baseCurrency)) throw new FirmError("Choose a three-letter base currency");
+  return db.transaction(async tx => {
+    const [firm] = await tx.select({ name: firms.name }).from(firms).where(eq(firms.id, firmId)).for("update");
+    if (!firm) throw new FirmError("Firm not found");
+    const [existing] = await tx.select({ id: entities.id, baseCurrency: entities.baseCurrency }).from(entities)
+      .where(and(eq(entities.firmId, firmId), eq(entities.isFirmBooks, true)));
+    if (existing) return existing.id;
+    const [entity] = await tx.insert(entities).values({ firmId, name: `${firm.name.slice(0, 180)} (firm books)`, baseCurrency, isFirmBooks: true })
+      .returning({ id: entities.id });
+    await seedDefaultCoa(entity.id, tx);
+    await ensureYearPeriods(entity.id, new Date().getFullYear(), tx);
+    await seedDefaultMappings(entity.id, tx);
+    await writeAudit(tx, { entityId: entity.id, userId: actingUserId, action: "FIRM_BOOKS_CREATED", tableName: "entities", recordId: entity.id,
+      afterState: { firmId, baseCurrency, isFirmBooks: true } });
+    return entity.id;
+  });
+}
 
 /**
  * Create a client business for the firm: entity + default chart of accounts +
@@ -315,12 +359,16 @@ export async function createClient(
 export async function listFirmClients(firmId: string) {
   const res = await db.execute(sql`
     SELECT e.id, e.name, e.legal_name, e.base_currency, e.is_active, e.created_at,
+           COALESCE(csm.managed_by,'client') AS subscription_managed_by,
+           COALESCE(csm.monthly_fee,0) AS monthly_fee,
+           COALESCE(csm.currency,e.base_currency) AS subscription_currency,
            (SELECT COUNT(*)::int FROM journal_entries je
              WHERE je.entity_id = e.id AND je.status = 'posted') AS posted_entries,
            (SELECT COUNT(*)::int FROM user_entity_access uea
              WHERE uea.entity_id = e.id) AS assigned_users
     FROM entities e
-    WHERE e.firm_id = ${firmId}
+    LEFT JOIN client_subscription_management csm ON csm.entity_id=e.id
+    WHERE e.firm_id = ${firmId} AND NOT e.is_firm_books
     ORDER BY e.name
   `);
   return (
@@ -333,6 +381,9 @@ export async function listFirmClients(firmId: string) {
       created_at: Date;
       posted_entries: number;
       assigned_users: number;
+      subscription_managed_by: string;
+      monthly_fee: string;
+      subscription_currency: string;
     }[]
   ).map((r) => ({
     id: r.id,
@@ -343,6 +394,9 @@ export async function listFirmClients(firmId: string) {
     createdAt: r.created_at,
     postedEntries: r.posted_entries,
     assignedUsers: r.assigned_users,
+    subscriptionManagedBy: r.subscription_managed_by,
+    monthlyFee: r.monthly_fee,
+    subscriptionCurrency: r.subscription_currency,
   }));
 }
 
@@ -357,7 +411,7 @@ export async function setClientActive(
     const [entity] = await tx
       .select({ name: entities.name, isActive: entities.isActive })
       .from(entities)
-      .where(and(eq(entities.id, entityId), eq(entities.firmId, firmId)));
+      .where(and(eq(entities.id, entityId), eq(entities.firmId, firmId), eq(entities.isFirmBooks, false)));
     if (!entity) throw new FirmError("Client not found in this firm");
 
     if (isActive && !entity.isActive) await assertCanAddEntity(firmId, tx);
@@ -378,12 +432,12 @@ export async function setClientActive(
 export async function firmOverview(firmId: string) {
   const res = await db.execute(sql`
     SELECT
-      (SELECT COUNT(*)::int FROM entities WHERE firm_id = ${firmId} AND is_active) AS active_clients,
-      (SELECT COUNT(*)::int FROM entities WHERE firm_id = ${firmId}) AS total_clients,
+      (SELECT COUNT(*)::int FROM entities WHERE firm_id = ${firmId} AND is_active AND NOT is_firm_books) AS active_clients,
+      (SELECT COUNT(*)::int FROM entities WHERE firm_id = ${firmId} AND NOT is_firm_books) AS total_clients,
       (SELECT COUNT(*)::int FROM users WHERE firm_id = ${firmId} AND is_active) AS active_users,
       (SELECT COUNT(*)::int FROM journal_entries je
          JOIN entities e ON e.id = je.entity_id
-        WHERE e.firm_id = ${firmId} AND je.status = 'posted') AS posted_entries
+        WHERE e.firm_id = ${firmId} AND NOT e.is_firm_books AND je.status = 'posted') AS posted_entries
   `);
   return res.rows[0] as {
     active_clients: number;

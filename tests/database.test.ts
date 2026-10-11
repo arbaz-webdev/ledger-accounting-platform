@@ -206,6 +206,59 @@ test("isolated PostgreSQL service regressions (never loads .env)", { timeout: 12
       await assert.rejects(settings.updateBusinessSettings(f.id,admin,{...profile,fiscalYearStartMonth:4}),/cannot change/);
       assert.equal((await settings.getBusinessSettings(f.id)).fiscalYearStartMonth,1);
     });
+    await t.test("firm books stay private and outside client limits; teams stay inside their firm", async () => {
+      const firmsService = await import("../src/services/firms");
+      const teamsService = await import("../src/services/firm-teams");
+      const insights = await import("../src/services/firm-insights");
+      const journal = await import("../src/services/journal");
+      const owner = randomUUID(), staff = randomUUID(), foreignFirm = randomUUID(), foreignStaff = randomUUID();
+      await query("INSERT INTO users(id,firm_id,email,password_hash,full_name,role) VALUES($1,$2,'owner-module@test.invalid','unused','Firm Owner','firm_owner'),($3,$2,'team-staff@test.invalid','unused','Team Staff','accountant_staff')",[owner,firm,staff]);
+      await query("INSERT INTO firms(id,name) VALUES($1,'Unrelated Firm')",[foreignFirm]);
+      await query("INSERT INTO users(id,firm_id,email,password_hash,full_name,role) VALUES($1,$2,'foreign-team@test.invalid','unused','Foreign Staff','accountant_staff')",[foreignStaff,foreignFirm]);
+      const beforeUsage = await subscriptions.firmUsage(firm);
+      const bookId = await firmsService.createFirmBooks(firm,"USD",owner);
+      assert.equal(await firmsService.createFirmBooks(firm,"USD",owner),bookId);
+      assert.equal((await subscriptions.firmUsage(firm)).entities,beforeUsage.entities);
+      assert.equal((await firmsService.listFirmClients(firm)).some(c=>c.id===bookId),false);
+      await auth.assertEntityAccess({id:owner,firmId:firm,role:"firm_owner",email:"",fullName:""},bookId);
+      await assert.rejects(auth.assertEntityAccess({id:staff,firmId:firm,role:"accountant_staff",email:"",fullName:""},bookId),/Only the firm owner/);
+      const teamId = await teamsService.createFirmTeam(firm,"Audit Team",owner);
+      await teamsService.assignUserToTeam(firm,staff,teamId,owner);
+      assert.equal((await teamsService.listTeamMemberships(firm)).get(staff),teamId);
+      await assert.rejects(teamsService.assignUserToTeam(firm,foreignStaff,teamId,owner),/not found/);
+      const foreignTeam = await teamsService.createFirmTeam(foreignFirm,"Other Team",foreignStaff);
+      await assert.rejects(teamsService.assignUserToTeam(firm,staff,foreignTeam,owner),/not found/);
+      const accounts = (await query("SELECT id,account_number FROM chart_of_accounts WHERE entity_id=$1",[bookId])).rows;
+      const account = (number:string) => accounts.find(a=>a.account_number===number).id as string;
+      const date = new Date().toISOString().slice(0,10);
+      await journal.postJournalEntry({entityId:bookId,date,description:"Firm service revenue",lines:[{accountId:account("1000"),debit:"100"},{accountId:account("4000"),credit:"100"}]},owner);
+      const months = await insights.firmMonthlyPerformance(bookId,date,1);
+      assert.equal(months[0].revenue,"100.00");
+      assert.equal((await insights.clientCashBalances(firm,date)).some(row=>row.id===bookId),false);
+      await firmsService.updateFirmSettings(firm,{name:"Updated Firm",fax:"123",contactPerson:"Contact",logo:{data:Buffer.from([137,80,78,71,13,10,26,10]),mime:"image/png"}},owner);
+      assert.equal((await query("SELECT fax,contact_person,logo_mime FROM firms WHERE id=$1",[firm])).rows[0].logo_mime,"image/png");
+    });
+    await t.test("client subscription arrangements are scoped and audited without posting revenue", async () => {
+      const management = await import("../src/services/client-subscriptions");
+      const owner = (await query("SELECT id FROM users WHERE firm_id=$1 AND role='firm_owner' LIMIT 1",[firm])).rows[0].id as string;
+      const beforeJournals = (await query("SELECT count(*)::int AS n FROM journal_entries")).rows[0].n;
+      await management.updateClientSubscriptionManagement(firm,entity,owner,{
+        managedBy:"firm",monthlyFee:"125.50",currency:"USD",renewalOn:"2027-01-01",notes:"Annual renewal",
+      });
+      const saved = await management.getClientSubscriptionManagement(firm,entity);
+      assert.equal(saved.managedBy,"firm");
+      assert.equal(saved.monthlyFee,"125.50");
+      assert.equal((await query("SELECT count(*)::int AS n FROM journal_entries")).rows[0].n,beforeJournals);
+      assert.equal((await query("SELECT count(*)::int AS n FROM audit_log WHERE action='CLIENT_SUBSCRIPTION_MANAGEMENT_UPDATED' AND record_id=$1",[entity])).rows[0].n,1);
+      const otherFirm = (await query("SELECT id FROM firms WHERE name='Unrelated Firm'")).rows[0].id as string;
+      await assert.rejects(management.getClientSubscriptionManagement(otherFirm,entity));
+      await assert.rejects(management.updateClientSubscriptionManagement(otherFirm,entity,owner,{
+        managedBy:"client",monthlyFee:"0",currency:"USD",
+      }));
+      await assert.rejects(management.updateClientSubscriptionManagement(firm,entity,owner,{
+        managedBy:"firm",monthlyFee:"-1",currency:"USD",
+      }));
+    });
     await t.test("settlements reject unsafe accounts and dates without changing documents or ledger", async () => {
       const contacts = await import("../src/services/contacts");
       const invoices = await import("../src/services/invoices");
@@ -533,6 +586,16 @@ test("isolated PostgreSQL service regressions (never loads .env)", { timeout: 12
           assert.equal(response.status,200,`${role} portal: ${output}`);
           assert.ok((await response.text()).length>500);
         }
+        for (const [path,title] of [["/firm/team","Team"],["/firm/settings","Firm settings"],["/firm/reports","Firm reports"],[`/firm/clients/${f.id}`,"subscription"]]) {
+          const response = await request(path,"firm_owner");
+          assert.equal(response.status,200,`${path}: ${output}`);
+          assert.ok((await response.text()).includes(title));
+          assert.equal((await request(path,"accountant_staff")).status,307);
+        }
+        const logo = await request("/firm/logo","firm_owner");
+        assert.equal(logo.status,200);
+        assert.match(logo.headers.get("content-type") ?? "",/image\/png/);
+        assert.equal((await request("/firm/logo","accountant_staff")).status,307);
         for (const [path,title] of [["/business/cash-flow","Cash Flow"],["/business/ar-ageing","A/R Ageing"],["/business/ap-ageing","A/P Ageing"]]) {
           const response = await request(path,"business_admin");
           assert.equal(response.status,200,`${path}: ${output}`);

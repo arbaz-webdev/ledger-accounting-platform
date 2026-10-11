@@ -157,6 +157,27 @@ export async function setUserActive(
   });
 }
 
+/** Only unused users can be removed: ledger and audit foreign keys preserve history. */
+export async function deleteFirmUser(targetUserId: string, firmId: string, actingUserId: string) {
+  if (targetUserId === actingUserId) throw new UserAdminError("You cannot delete your own account");
+  try {
+    return await db.transaction(async tx => {
+      const [target] = await tx.select({ email: users.email, role: users.role })
+        .from(users).where(and(eq(users.id, targetUserId), eq(users.firmId, firmId))).for("update");
+      if (!target) throw new UserAdminError("User not found in this firm");
+      await tx.delete(users).where(and(eq(users.id, targetUserId), eq(users.firmId, firmId)));
+      await writeAudit(tx, { userId: actingUserId, action: "USER_DELETED", tableName: "users", recordId: targetUserId,
+        beforeState: { email: target.email, role: target.role } });
+    });
+  } catch (error) {
+    const dbError = error as { cause?: { code?: string }; code?: string };
+    if (dbError.code === "23503" || dbError.cause?.code === "23503") {
+      throw new UserAdminError("This user has accounting or audit history and cannot be deleted. Disable the account instead.");
+    }
+    throw error;
+  }
+}
+
 /** Grant access to an entity with role-appropriate starting permissions. */
 export async function grantEntityAccess(
   targetUserId: string,
@@ -174,7 +195,7 @@ export async function grantEntityAccess(
     const [entity] = await tx
       .select({ id: entities.id })
       .from(entities)
-      .where(and(eq(entities.id, entityId), eq(entities.firmId, firmId)));
+      .where(and(eq(entities.id, entityId), eq(entities.firmId, firmId), eq(entities.isFirmBooks, false)));
     if (!entity) throw new UserAdminError("Entity not found in this firm");
 
     await tx

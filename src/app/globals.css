@@ -633,3 +633,24 @@ button:disabled {
     text-decoration: none !important;
   }
 }
+
+/* Column handles are attached to every data table after hydration. */
+.column-resize-handle {
+  position: absolute;
+  z-index: 2;
+  top: 0;
+  right: -5px;
+  height: 100%;
+  width: 10px;
+  cursor: col-resize;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  touch-action: none;
+}
+.column-resize-handle:hover,
+.column-resize-handle:focus-visible {
+  background: color-mix(in srgb, var(--brand-500) 55%, transparent);
+  outline: 2px solid var(--brand-500);
+  outline-offset: -2px;
+}

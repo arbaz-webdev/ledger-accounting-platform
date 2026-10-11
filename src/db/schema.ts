@@ -13,7 +13,10 @@ import {
   jsonb,
   primaryKey,
   unique,
+  customType,
 } from "drizzle-orm/pg-core";
+
+const bytea = customType<{ data: Buffer; driverData: Buffer }>({ dataType: () => "bytea" });
 
 // ---------------------------------------------------------------------------
 // Enums
@@ -76,6 +79,10 @@ export const firms = pgTable("firms", {
   legalName: text("legal_name"),
   contactEmail: text("contact_email"),
   contactPhone: text("contact_phone"),
+  fax: text("fax"),
+  contactPerson: text("contact_person"),
+  logoData: bytea("logo_data"),
+  logoMime: text("logo_mime"),
   /** platform kill switch — false locks every user of the firm out */
   isActive: boolean("is_active").notNull().default(true),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -129,6 +136,21 @@ export const users = pgTable("users", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+export const firmTeams = pgTable("firm_teams", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  firmId: uuid("firm_id").notNull().references(() => firms.id, { onDelete: "cascade" }),
+  name: text("name").notNull(),
+  createdBy: uuid("created_by").references(() => users.id),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [unique().on(t.firmId, t.id)]);
+
+export const firmTeamMembers = pgTable("firm_team_members", {
+  firmId: uuid("firm_id").notNull(),
+  teamId: uuid("team_id").notNull(),
+  userId: uuid("user_id").primaryKey(),
+  addedAt: timestamp("added_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 export const entities = pgTable("entities", {
   id: uuid("id").primaryKey().defaultRandom(),
   firmId: uuid("firm_id")
@@ -139,6 +161,7 @@ export const entities = pgTable("entities", {
   baseCurrency: char("base_currency", { length: 3 }).notNull().default("USD"),
   fiscalYearStartMonth: integer("fiscal_year_start_month").notNull().default(1),
   isActive: boolean("is_active").notNull().default(true),
+  isFirmBooks: boolean("is_firm_books").notNull().default(false),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -155,6 +178,16 @@ export const businessSettings = pgTable("business_settings", {
   defaultTaxRate: numeric("default_tax_rate", { precision: 9, scale: 4 }).notNull().default("0"),
   invoiceEmailTemplate: text("invoice_email_template"),
   reminderEmailTemplate: text("reminder_email_template"),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const clientSubscriptionManagement = pgTable("client_subscription_management", {
+  entityId: uuid("entity_id").primaryKey().references(() => entities.id, { onDelete: "cascade" }),
+  managedBy: text("managed_by").notNull().default("client"),
+  monthlyFee: numeric("monthly_fee", { precision: 18, scale: 2 }).notNull().default("0"),
+  currency: char("currency", { length: 3 }).notNull().default("USD"),
+  renewalOn: date("renewal_on"),
+  notes: text("notes"),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
