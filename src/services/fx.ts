@@ -114,6 +114,8 @@ export async function setFxRate(
   return db.transaction(async (tx) => {
     const currency = input.currency.trim().toUpperCase();
     if (!/^[A-Z]{3}$/.test(currency)) throw new FxError("Currency must be a 3-letter code");
+    const date = new Date(`${input.asOfDate}T00:00:00Z`);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(input.asOfDate) || !Number.isFinite(date.getTime()) || date.toISOString().slice(0,10)!==input.asOfDate) throw new FxError("Enter a valid effective date");
 
     const base = await getBaseCurrency(entityId);
     if (currency === base) {
@@ -121,7 +123,7 @@ export async function setFxRate(
     }
 
     const rate = new Decimal(input.rate || 0);
-    if (rate.lessThanOrEqualTo(0)) throw new FxError("Rate must be greater than zero");
+    if (!rate.isFinite() || rate.lessThanOrEqualTo(0) || rate.decimalPlaces()>8) throw new FxError("Rate must be positive with at most eight decimal places");
 
     await tx
       .insert(fxRates)

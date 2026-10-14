@@ -643,7 +643,7 @@ test("isolated PostgreSQL service regressions (never loads .env)", { timeout: 12
         const newInvoice = await request("/business/invoices/new","business_admin");
         assert.equal(newInvoice.status,200);
         assert.ok((await newInvoice.text()).includes("New invoice"));
-        for (const [path,title] of [["/business/bills/new","New bill"],["/business/contacts","Customers"],["/business/catalog","Products"],["/business/reports","Reports"],["/business/reports/trial-balance","Trial Balance"],["/business/transactions","Post transaction"],["/business/employees","Employees"]]) {
+        for (const [path,title] of [["/business/bills/new","New bill"],["/business/contacts","Customers"],["/business/catalog","Products"],["/business/reports","Reports"],["/business/reports/trial-balance","Trial Balance"],["/business/transactions","Post transaction"],["/business/employees","Employees"],["/business/activity","Activity log"],["/business/fx-rates","Exchange rates"]]) {
           const response = await request(path,"business_admin");
           assert.equal(response.status,200,`${path}: ${output}`);
           assert.ok((await response.text()).includes(title));

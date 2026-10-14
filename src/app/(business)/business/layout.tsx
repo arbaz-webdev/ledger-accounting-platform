@@ -69,6 +69,8 @@ export default async function BusinessLayout({ children }: { children: React.Rea
             </details>
           ))}
           {user.role === "business_admin" && <a href="/business/settings" className="rounded-md px-3 py-2 text-sm font-medium text-[var(--ink-700)] hover:bg-[var(--ink-50)]">Settings</a>}
+          {user.role === "business_admin" && <a href="/business/fx-rates" className="rounded-md px-3 py-2 text-sm font-medium text-[var(--ink-700)] hover:bg-[var(--ink-50)]">FX rates</a>}
+          {user.role === "business_admin" && <a href="/business/activity" className="rounded-md px-3 py-2 text-sm font-medium text-[var(--ink-700)] hover:bg-[var(--ink-50)]">Activity log</a>}
           <span className="w-full text-xs text-[var(--ink-500)] sm:w-auto sm:pl-2">{canPostSales || canPostPurchases || canPostJournal ? "Business owner access" : "Read-only access"}</span>
         </nav>
       </div>
