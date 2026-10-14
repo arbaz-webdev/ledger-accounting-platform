@@ -191,6 +191,44 @@ export const clientSubscriptionManagement = pgTable("client_subscription_managem
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+export const firmClientLinks = pgTable("firm_client_links", {
+  firmId: uuid("firm_id").notNull().references(() => firms.id, { onDelete: "cascade" }),
+  clientEntityId: uuid("client_entity_id").primaryKey().references(() => entities.id, { onDelete: "cascade" }),
+  customerContactId: uuid("customer_contact_id").notNull().unique().references(() => contacts.id),
+  linkedAt: timestamp("linked_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const firmStaffRates = pgTable("firm_staff_rates", {
+  firmId: uuid("firm_id").notNull().references(() => firms.id, { onDelete: "cascade" }),
+  userId: uuid("user_id").primaryKey().references(() => users.id, { onDelete: "cascade" }),
+  hourlyCost: numeric("hourly_cost", { precision: 18, scale: 2 }).notNull(),
+  capacityHoursWeek: numeric("capacity_hours_week", { precision: 6, scale: 2 }).notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const firmTimeEntries = pgTable("firm_time_entries", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  firmId: uuid("firm_id").notNull().references(() => firms.id, { onDelete: "cascade" }),
+  clientEntityId: uuid("client_entity_id").notNull().references(() => entities.id),
+  userId: uuid("user_id").notNull().references(() => users.id),
+  workDate: date("work_date").notNull(),
+  hours: numeric("hours", { precision: 6, scale: 2 }).notNull(),
+  hourlyCost: numeric("hourly_cost", { precision: 18, scale: 2 }).notNull(),
+  billable: boolean("billable").notNull().default(true),
+  description: text("description").notNull(),
+  createdBy: uuid("created_by").notNull().references(() => users.id),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const firmBudgets = pgTable("firm_budgets", {
+  firmId: uuid("firm_id").notNull().references(() => firms.id, { onDelete: "cascade" }),
+  monthStart: date("month_start").notNull(),
+  currency: char("currency", { length: 3 }).notNull(),
+  revenueTarget: numeric("revenue_target", { precision: 18, scale: 2 }).notNull(),
+  expenseBudget: numeric("expense_budget", { precision: 18, scale: 2 }).notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [primaryKey({ columns: [t.firmId,t.monthStart] })]);
+
 export const userEntityAccess = pgTable(
   "user_entity_access",
   {

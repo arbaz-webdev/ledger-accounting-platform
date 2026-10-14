@@ -15,7 +15,8 @@ export default async function BusinessReportsPage() {
   const reports = [...REPORTS, ...Object.entries(PORTAL_REPORTS).map(([slug, item]) => ({ href: `/business/reports/${slug}`, title: item.title, description: item.description }))].filter((report) =>
     report.href.includes("ar-ageing") ? allowed.has("sales") :
     report.href.includes("ap-ageing") ? allowed.has("purchases") :
-    report.href.includes("inventory-valuation") ? allowed.has("inventory") :
+    report.href.includes("sales-by-item") ? allowed.has("sales") && allowed.has("inventory") :
+    report.href.includes("inventory-valuation") || report.href.includes("inventory-movements") ? allowed.has("inventory") :
     report.href.includes("sales-by-customer") ? allowed.has("sales") :
     report.href.includes("purchases-by-vendor") ? allowed.has("purchases") : true
   );

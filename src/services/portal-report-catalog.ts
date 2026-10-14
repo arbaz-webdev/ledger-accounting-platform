@@ -11,6 +11,9 @@ export const PORTAL_REPORTS = {
   "purchases-by-vendor": { title: "Purchases by Vendor", description: "Supplier spend over the selected period." },
   "expenses-by-category": { title: "Expenses by Category", description: "Posted expense balances by account." },
   "inventory-valuation": { title: "Inventory Valuation", description: "Current stock quantity and remaining book value." },
+  "sales-by-item": { title: "Sales by Item", description: "Posted item quantities and sales before tax." },
+  "inventory-movements": { title: "Inventory Movements", description: "Chronological stock receipts, issues and adjustments." },
+  "bank-reconciliations": { title: "Bank Reconciliations", description: "Approved bank statement and book balance comparisons." },
 } as const;
 
 export type PortalReportSlug = keyof typeof PORTAL_REPORTS;
@@ -78,6 +81,46 @@ export async function getPortalCatalogReport(entityId: string, slug: PortalRepor
       const items = await listItems(entityId);
       headers = ["SKU", "Item", "Quantity on hand", "Unit", "Book value"];
       rows = items.filter((item) => !item.isService).map((item) => [item.sku, item.name, item.qtyOnHand, item.unit, item.valueOnHand]);
+      break;
+    }
+    case "sales-by-item": {
+      const result = await db.execute(sql`
+        SELECT item.sku,item.name,COALESCE(SUM(line.quantity),0) AS quantity,
+          COALESCE(SUM(line.net_amount),0) AS sales
+        FROM invoice_lines line JOIN inventory_items item ON item.id=line.item_id
+        JOIN invoices invoice ON invoice.id=line.invoice_id
+        JOIN journal_entries original ON original.id=invoice.je_id AND original.status IN ('posted','voided')
+        LEFT JOIN journal_entries reversal ON reversal.id=original.voided_by_je_id
+        WHERE invoice.entity_id=${entityId} AND invoice.issue_date BETWEEN ${from} AND ${to}
+          AND (reversal.id IS NULL OR reversal.date>${to})
+        GROUP BY item.id ORDER BY sales DESC,item.name`);
+      headers = ["SKU","Item","Quantity sold","Sales before tax"];
+      rows = (result.rows as {sku:string;name:string;quantity:string;sales:string}[])
+        .map(row=>[row.sku,row.name,row.quantity,row.sales]);
+      break;
+    }
+    case "inventory-movements": {
+      const result = await db.execute(sql`
+        SELECT movement.date,item.sku,item.name,movement.kind,movement.quantity,movement.total_cost,
+          COALESCE(movement.reference,'') AS reference
+        FROM inventory_movements movement JOIN inventory_items item ON item.id=movement.item_id
+        WHERE movement.entity_id=${entityId} AND movement.date BETWEEN ${from} AND ${to}
+        ORDER BY movement.date DESC,movement.created_at DESC LIMIT 1000`);
+      headers = ["Date","SKU","Item","Movement","Quantity","Cost","Reference"];
+      rows = (result.rows as {date:string;sku:string;name:string;kind:string;quantity:string;total_cost:string;reference:string}[])
+        .map(row=>[row.date,row.sku,row.name,row.kind.replaceAll("_"," "),row.quantity,row.total_cost,row.reference]);
+      break;
+    }
+    case "bank-reconciliations": {
+      const result = await db.execute(sql`
+        SELECT recon.statement_date,account.account_number,account.name,recon.statement_balance,
+          recon.book_balance,recon.cleared_total,recon.approved_at
+        FROM bank_reconciliations recon JOIN chart_of_accounts account ON account.id=recon.bank_account_id
+        WHERE recon.entity_id=${entityId} AND recon.statement_date BETWEEN ${from} AND ${to}
+        ORDER BY recon.statement_date DESC LIMIT 1000`);
+      headers = ["Statement date","Account","Bank","Statement balance","Book balance","Cleared","Approved at"];
+      rows = (result.rows as {statement_date:string;account_number:string;name:string;statement_balance:string;book_balance:string;cleared_total:string;approved_at:Date}[])
+        .map(row=>[row.statement_date,row.account_number,row.name,row.statement_balance,row.book_balance,row.cleared_total,row.approved_at.toISOString()]);
       break;
     }
   }

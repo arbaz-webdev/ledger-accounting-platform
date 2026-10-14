@@ -185,6 +185,20 @@ test("isolated PostgreSQL service regressions (never loads .env)", { timeout: 12
       await invoices.voidInvoice(invoice.id,f.id,admin,date);
       assert.equal((await invoices.getInvoice(invoice.id,f.id))?.outstanding,"0.00");
     });
+    await t.test("business bank transactions post balanced entries and reject wrong account purposes", async () => {
+      const f = await fixture("Business bank transactions");
+      const transactions = await import("../src/services/business-transactions");
+      const extraBank = randomUUID();
+      await query("INSERT INTO chart_of_accounts(id,entity_id,account_number,name,type,sub_type) VALUES($1,$2,'1002','Savings','asset','cash_and_bank')",[extraBank,f.id]);
+      const date = new Date().toISOString().slice(0,10);
+      const posted = await transactions.postQuickTransaction({entityId:f.id,kind:"transfer",date,
+        description:"Move to savings",amount:"25.50",bankAccountId:f.account("1000"),counterAccountId:extraBank},admin);
+      assert.equal((await query("SELECT COALESCE(SUM(debit_base-credit_base),0)::text AS net FROM journal_entry_lines WHERE je_id=$1",[posted.jeId])).rows[0].net,"0.00");
+      await assert.rejects(transactions.postQuickTransaction({entityId:f.id,kind:"expense",date,
+        description:"Wrong account",amount:"5",bankAccountId:f.account("1000"),counterAccountId:f.account("4000")},admin),/expense account/);
+      await assert.rejects(transactions.postQuickTransaction({entityId:f.id,kind:"receipt",date,
+        description:"Foreign account",amount:"5",bankAccountId:f.account("1000"),counterAccountId:(await fixture("Another account source")).account("4000")},admin),/active accounts/);
+    });
     await t.test("owner settings change future document numbers and preserve posted fiscal rules", async () => {
       const f = await fixture("Company settings client");
       const settings = await import("../src/services/business-settings");
@@ -237,6 +251,30 @@ test("isolated PostgreSQL service regressions (never loads .env)", { timeout: 12
       assert.equal((await insights.clientCashBalances(firm,date)).some(row=>row.id===bookId),false);
       await firmsService.updateFirmSettings(firm,{name:"Updated Firm",fax:"123",contactPerson:"Contact",logo:{data:Buffer.from([137,80,78,71,13,10,26,10]),mime:"image/png"}},owner);
       assert.equal((await query("SELECT fax,contact_person,logo_mime FROM firms WHERE id=$1",[firm])).rows[0].logo_mime,"image/png");
+    });
+    await t.test("firm planning isolates clients, snapshots staff cost and reports monthly targets", async () => {
+      const planning = await import("../src/services/firm-planning");
+      const contacts = await import("../src/services/contacts");
+      const owner = (await query("SELECT id FROM users WHERE firm_id=$1 AND role='firm_owner' LIMIT 1",[firm])).rows[0].id as string;
+      const bookId = (await query("SELECT id FROM entities WHERE firm_id=$1 AND is_firm_books LIMIT 1",[firm])).rows[0].id as string;
+      const customer = await contacts.createContact({entityId:bookId,type:"customer",name:"Client billing"},owner);
+      await planning.linkFirmClient(firm,entity,customer.id,owner);
+      const staff = (await query("SELECT id FROM users WHERE firm_id=$1 AND role='accountant_staff' AND is_active ORDER BY created_at DESC LIMIT 1",[firm])).rows[0].id as string;
+      await planning.setFirmStaffRate(firm,staff,"20.00","40.00",owner);
+      const date = new Date().toISOString().slice(0,10);
+      const id = await planning.recordFirmTime({firmId:firm,clientEntityId:entity,userId:staff,workDate:date,hours:"1.25",billable:true,description:"Month end review"},owner);
+      await planning.setFirmStaffRate(firm,staff,"30.00","40.00",owner);
+      const contribution = (await planning.firmClientContribution(firm,date,date)).find(row=>row.id===entity);
+      assert.equal(contribution?.time_cost,"25.00");
+      assert.equal(contribution?.contribution,"-25.00");
+      assert.equal((await planning.firmStaffUtilisation(firm,date,date)).find(row=>row.id===staff)?.billable_hours,"1.25");
+      await planning.setFirmBudget(firm,`${date.slice(0,7)}-01`,"500.00","200.00",owner);
+      assert.equal((await planning.firmBudgetVsActual(firm,date,date))[0].revenueTarget,"500.00");
+      const otherFirm = (await query("SELECT id FROM firms WHERE name='Unrelated Firm'")).rows[0].id as string;
+      await assert.rejects(planning.linkFirmClient(otherFirm,entity,customer.id,owner),/not found/);
+      await assert.rejects(planning.recordFirmTime({firmId:otherFirm,clientEntityId:entity,userId:staff,workDate:date,hours:"1",billable:true,description:"Cross firm"},owner),/not found/);
+      await planning.deleteFirmTime(firm,id,owner);
+      assert.equal((await planning.firmClientContribution(firm,date,date)).find(row=>row.id===entity)?.time_cost,"0.00");
     });
     await t.test("client subscription arrangements are scoped and audited without posting revenue", async () => {
       const management = await import("../src/services/client-subscriptions");
@@ -586,7 +624,7 @@ test("isolated PostgreSQL service regressions (never loads .env)", { timeout: 12
           assert.equal(response.status,200,`${role} portal: ${output}`);
           assert.ok((await response.text()).length>500);
         }
-        for (const [path,title] of [["/firm/team","Team"],["/firm/settings","Firm settings"],["/firm/reports","Firm reports"],[`/firm/clients/${f.id}`,"subscription"]]) {
+        for (const [path,title] of [["/firm/team","Team"],["/firm/settings","Firm settings"],["/firm/reports","Firm reports"],["/firm/planning","Firm planning"],[`/firm/clients/${f.id}`,"subscription"]]) {
           const response = await request(path,"firm_owner");
           assert.equal(response.status,200,`${path}: ${output}`);
           assert.ok((await response.text()).includes(title));
@@ -605,7 +643,7 @@ test("isolated PostgreSQL service regressions (never loads .env)", { timeout: 12
         const newInvoice = await request("/business/invoices/new","business_admin");
         assert.equal(newInvoice.status,200);
         assert.ok((await newInvoice.text()).includes("New invoice"));
-        for (const [path,title] of [["/business/bills/new","New bill"],["/business/contacts","Customers"],["/business/catalog","Products"],["/business/reports","Reports"],["/business/reports/trial-balance","Trial Balance"]]) {
+        for (const [path,title] of [["/business/bills/new","New bill"],["/business/contacts","Customers"],["/business/catalog","Products"],["/business/reports","Reports"],["/business/reports/trial-balance","Trial Balance"],["/business/transactions","Post transaction"],["/business/employees","Employees"]]) {
           const response = await request(path,"business_admin");
           assert.equal(response.status,200,`${path}: ${output}`);
           assert.ok((await response.text()).includes(title));

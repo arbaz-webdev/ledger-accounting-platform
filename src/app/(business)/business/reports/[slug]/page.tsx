@@ -13,7 +13,8 @@ export default async function PortalCatalogReportPage({ params, searchParams }: 
   const { slug } = await params;
   if (!(slug in PORTAL_REPORTS)) notFound();
   const portal = await guardPortal("reports");
-  if (slug === "inventory-valuation" && !portal.allowed.has("inventory")) notFound();
+  if (["inventory-valuation","inventory-movements","sales-by-item"].includes(slug) && !portal.allowed.has("inventory")) notFound();
+  if (slug === "sales-by-item" && !portal.allowed.has("sales")) notFound();
   if (slug === "sales-by-customer" && !portal.allowed.has("sales")) notFound();
   if (slug === "purchases-by-vendor" && !portal.allowed.has("purchases")) notFound();
   const sp = await searchParams;

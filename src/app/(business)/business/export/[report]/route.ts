@@ -19,6 +19,8 @@ export async function GET(request: Request, context: { params: Promise<{ report:
   if (report === "sales-by-customer" && !portal.allowed.has("sales")) return new Response("Forbidden", { status: 403 });
   if (report === "purchases-by-vendor" && !portal.allowed.has("purchases")) return new Response("Forbidden", { status: 403 });
   if (report === "inventory-valuation" && !portal.allowed.has("inventory")) return new Response("Forbidden", { status: 403 });
+  if (["sales-by-item","inventory-movements"].includes(report) && !portal.allowed.has("inventory")) return new Response("Forbidden", { status: 403 });
+  if (report === "sales-by-item" && !portal.allowed.has("sales")) return new Response("Forbidden", { status: 403 });
   const today = todayIso();
   const params = new URL(request.url).searchParams;
   const defaults = defaultFiscalRange(today, portal.fiscalYearStartMonth);
