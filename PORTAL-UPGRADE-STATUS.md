@@ -17,6 +17,6 @@ Sources: `SaaS Customer Portal Specification & Developer Guide (1).pdf` and `Req
 - Native PDF files for reports and credit notes, full inventory analytics beyond valuation/movements, invoice template customization, and business portal screens for deeper role administration, tax/FX settings, lock dates and security log. Printing from the browser can save current reports as PDF.
 - Automated invoice email, Stripe and PayPal payment links, direct bank feeds, and off-site scheduled backups require service accounts, credentials, and a backup destination. Email templates and bank CSV import exist, but automatic sending and direct feeds are not active.
 - Client contribution is an estimate. It omits indirect firm overhead, and firm subscription revenue appears in actuals only after a firm invoice is posted. The firm owner must supply client/customer links, staff cost/capacity, time entries, and budget targets for meaningful figures.
-- Firm branding upload is available, but no business-specific logo was provided for either firm. The platform already has its own vector mark.
+- Firm branding upload is available. Draft transparent logos for B&B Accounting Firm LLC and Meridian Accounting are in `assets/firm-logo-drafts/`, with upload-sized PNG copies. The owner needs to choose/approve a draft before it replaces either firm's live branding. The platform already has its own vector mark.
 
 No pending external-service control is shown as an active feature. Ledger corrections should be added only after their accounting and audit behavior is fully verified.
