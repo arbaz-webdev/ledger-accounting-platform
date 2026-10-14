@@ -1,10 +1,10 @@
 # Ledger Accounting Platform progress report
 
-**Date:** 15 October 2026  
-**Sources:** `SaaS Customer Portal Specification & Developer Guide (1).pdf` and `Req.pdf`  
-**Live site:** https://ledger-accounting-platform.vercel.app/login  
-**GitHub:** https://github.com/arbaz-webdev/ledger-accounting-platform  
-**Latest verified GitHub commit:** `8b2a466`
+- **Date:** 15 October 2026
+- **Sources:** `SaaS Customer Portal Specification & Developer Guide (1).pdf` and `Req.pdf`
+- **Live site:** https://ledger-accounting-platform.vercel.app/login
+- **GitHub:** https://github.com/arbaz-webdev/ledger-accounting-platform
+- **Latest verified code commit:** `8b2a466`
 
 ## Overall position
 
